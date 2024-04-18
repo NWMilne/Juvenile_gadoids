@@ -1,0 +1,3146 @@
+---
+title: "RMD version of Gadoid Data"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## R packages 
+```{r Packages,message=FALSE,warning=FALSE}
+rm(list=ls())
+library(plyr)
+library(arm)
+library(sf)
+library(rgdal)
+library(raster)
+library(mgcv)
+library(tidyverse)
+library(mapproj)
+require(ggplot2)
+require(reshape)
+
+```
+
+## Loading in Abundance Data
+```{r Loading Abundance Data 2020 Gadoids}
+getwd()
+Gadoid.2020 <- read.csv("MaxN_All_Summarytable_2020_2.csv")
+
+names(Gadoid.2020)
+select_names <- c(1,4,6,8,10,11,12,18:23)
+names(Gadoid.2020)[select_names]
+Gadoid.2020 <- subset(Gadoid.2020, select=select_names)
+names(Gadoid.2020)
+```
+
+## Subset by Species
+```{r Subsetting Data by Species}
+
+species_names <- c("aeglefinus","merlangus","morhua")
+gadoid_sub.2020 <- subset(Gadoid.2020,Species%in%c("aeglefinus","merlangus","morhua"))
+head(gadoid_sub.2020)
+```
+
+##Metadata skip fetch
+```{r metadata without previous steps}
+metadata.2021 <- read.csv("metadata.2021.2.csv")
+summary(metadata.2021)
+
+```
+
+## Combine meta and abundance
+```{r Assembling full dataframe from metadata 2020}
+library(foreach)
+
+head(metadata.2021)
+results.2018 <- foreach(i=1:nrow(metadata.2021),.combine=rbind) %do%
+{
+  #Obtain station from metadata
+  metaStation.2018 <- as.character(metadata.2021[i,1])
+  
+  #Split gadoid data frame for this station
+  gadoidStation.2018 <- foreach(j=species_names,.combine=rbind) %do%
+  {
+    species_station.2018 <- subset(gadoid_sub.2020,Station==metaStation.2018&Species==j)
+    if(nrow(species_station.2018)!=0)
+    {
+      species_station.2018
+    }else
+    {
+      data.frame(Filename="No",Period="Bottom Time",OpCode="No",Depth=metadata.2021[i,]$Depth,Station=metaStation.2018,Year=metadata.2021[i,]$Year,Date=metadata.2021[i,]$Date,Habitat=metadata.2021[i,]$Habitat,Family="Family",Genus="Genus",Species=j,Code=j,MaxN=0)
+    }
+  }
+  
+  #Bind together
+  meta_out.2018 <- metadata.2021[i,6:51]
+  row.names(meta_out.2018) <- c()
+  cbind(meta_out.2018,gadoidStation.2018)
+}
+
+head(results.2018)
+#Adding presence/absence
+results.2018$PA <- ifelse(results.2018$MaxN>0,1,0)
+results.2018 <- results.2018[ -c(50,54) ] # duplicate column removed
+head(results.2018)
+
+## removing points deeper than 40m to tighten up the data
+results.2018 <- subset(results.2018, Depth < 40)
+head(results.2018)
+# exporting csv file in case script does not run
+#write.csv(results.2018,"results.2018.2.csv", row.names = FALSE)
+# importing the csv file back in so don't have to build it all from scratch
+#results.2018 <- read.csv("results.2018.csv")
+```
+
+## Data Exploration
+```{r Data Exploration}
+results.2018[is.na(results.2018)] <- 0
+plot_df_1 <- melt(results.2018,id.vars="Species",measure.vars = 14:19)
+
+ggplot(plot_df_1,aes(variable,value))+
+  geom_boxplot()+
+  theme_bw(20)+
+  labs(x="",y="% Cover")
+
+results.2018$Habitat <- as.factor(results.2018$Habitat)
+results.2018$patchID <-  as.factor(results.2018$patchID)
+
+Abund <- ddply(results.2018, c("Species"), summarise,
+               N    = sum(PA),
+               H=length(PA),
+               mean = mean(PA),
+               sd   = sd(PA),
+               se   = sd / sqrt(N),
+               max = max(MaxN),
+               min = min(MaxN))
+Abund$Zero <- sum(results.2018$PA==0)/nrow(results.2018)
+Abund
+
+(542-225)/542 #= 58
+(542-226)/542 #= 58
+(542-237)/542 #= 56
+# subsetting each species seprately so that we are not using the main df with 3 rows for each site
+cod_sub.2018 <- subset(results.2018,Species%in%c("morhua"))
+cod_sub.2018 <- tibble::rowid_to_column(cod_sub.2018, "ID")
+cod_sub.2018 <- cod_sub.2018[order(cod_sub.2018$PA),]
+cod_sub.2018<-cod_sub.2018[!duplicated(cod_sub.2018$Station, fromLast=TRUE), ]
+head(cod_sub.2018)
+dim(cod_sub.2018)#542
+colSums(is.na(cod_sub.2018))
+
+had_sub.2018 <- subset(results.2018,Species%in%c("aeglefinus"))
+had_sub.2018 <- tibble::rowid_to_column(had_sub.2018, "ID")
+had_sub.2018<-had_sub.2018[!duplicated(had_sub.2018$Station, fromLast=TRUE), ]
+
+whit_sub.2018 <- subset(results.2018,Species%in%c("merlangus"))
+whit_sub.2018 <- tibble::rowid_to_column(whit_sub.2018, "ID")
+whit_sub.2018<-whit_sub.2018[!duplicated(whit_sub.2018$Station, fromLast=TRUE), ]
+
+Abund.cod <- ddply(cod_sub.2018, c("Habitat"), summarise,
+               N    = sum(PA),
+               H = length(Station),
+               Zero= sum(PA==0)/nrow(cod_sub.2018),
+               mean = mean(PA),
+               sd   = sd(PA),
+               se   = sd / sqrt(N),
+               max = max(MaxN),
+               min = min(MaxN))#,
+               Zero = (sum(cod_sub.2018$PA==0)/nrow(cod_sub.2018)) # 0.5307
+Abund.cod
+
+Abund.had <- ddply(had_sub.2018, c("Habitat"), summarise,
+               N    = sum(PA),
+               H = length(Station),
+               Zero= sum(PA==0)/nrow(had_sub.2018),
+               mean = mean(PA),
+               sd   = sd(PA),
+               se   = sd / sqrt(N),
+               max = max(MaxN),
+               min = min(MaxN))#,
+               Zero = (sum(had_sub.2018$PA==0)/nrow(had_sub.2018)) # 0.569
+Abund.had
+               
+Abund.whit <- ddply(whit_sub.2018, c("Habitat"), summarise,
+               N    = sum(PA),
+               H = length(Station),
+               Zero= sum(PA==0)/nrow(whit_sub.2018),
+               mean = mean(PA),
+               sd   = sd(PA),
+               se   = sd / sqrt(N),
+               max = max(MaxN),
+               min = min(MaxN))#,
+               Zero = (sum(whit_sub.2018$PA==0)/nrow(whit_sub.2018)) # 0.5717
+Abund.whit
+
+par(mfrow=c(1,1))
+summary(results.2018)
+names(results.2018)
+
+plot(results.2018$Habitat)
+table(results.2018$Habitat, results.2018$PA)
+
+#Stacked Bar Plot with Colors and Legend
+counts <- table(results.2018$Habitat, results.2018$MaxN)
+barplot(counts, results.2018$Depth,main="Gadoid abundance by Habitat",
+        xlab="Abundance (MaxN)", ylab="Frequency of occurance", col=c(1,2,3,4,5,6,7,8),
+        legend = rownames(counts))
+
+# Change box plot by groups
+ggplot(results.2018, aes(x=Habitat, y=MaxN, fill=Species)) +
+  geom_boxplot() + 
+  stat_boxplot(geom ='errorbar') +
+  geom_boxplot(outlier.shape = NA) + 
+  scale_fill_brewer(palette="RdBu") + 
+  scale_y_continuous(trans='log2')+
+  theme_minimal()
+
+```
+
+## Mapping
+```{r mapping}
+library(sp)
+library(ggspatial)
+library(gridExtra)
+library(grid)
+library(raster)
+
+# get the shapefile of the MPa
+# not even sure if we will use the zone that were prevously used but it's tehre if we need to have a look
+MPA = rgdal::readOGR("Shapefiles/MPA")
+MPA$Zone
+MPA@proj4string # check crs
+st_crs(MPA)
+class(MPA) # convert to sf
+MPA <- st_as_sf(MPA)
+MPA <- st_transform(MPA, "EPSG:4326")
+st_bbox(MPA)
+
+# get the MPA fishing limitation measures shapefile, see if we sampled in the maerl boxes etc
+measures = rgdal::readOGR("Shapefiles/South_arran_measures")
+measures
+measures@proj4string # check crs
+st_crs(measures)
+class(measures) # convert to sf
+measures <- st_as_sf(measures)
+measures <- st_transform(measures, "EPSG:4326")
+st_bbox(measures)
+
+
+#### importing all the environmental variables rasters ####
+algae.import <- raster("Rasters/auto.algae_krig.tif")
+gravel.import <- raster("Rasters/auto.gravel_krig.tif")
+mud.import <- raster("Rasters/auto.mud_krig.tif")
+sand.import <- raster("Rasters/auto.sand_krig.tif")
+simpson.import <- raster("Rasters/auto.Simpson_krig.tif")
+velocity.import <- raster("Rasters/masked.velocity.tif")
+distance.import <- raster("Rasters/masked.distance.tif")
+bathy.import <- raster("Rasters/bathy_masked.tif")
+TRI.import <- raster("Rasters/TRI.raster.tif")
+sand.dist <- raster("Rasters/Distance rasters/Sand_dist_edge.tif")
+gravel.dist <- raster("Rasters/Distance rasters/Gravel_dist_edge.tif")
+algae.dist <-raster("Rasters/Distance rasters/Algae_dist_edge.tif")
+mud.dist <-raster("Rasters/Distance rasters/Mud_dist_edge.tif")
+
+# pretty up the names
+names(bathy.import) <- "Bathymetry"
+names(algae.import) <- "Algae"
+names(gravel.import) <- "Gravel"
+names(mud.import) <- "Mud"
+names(sand.import) <- "Sand"
+names(simpson.import) <- "Simpson"
+names(velocity.import) <- "Velocity"
+names(distance.import) <- "Dist.Shore"
+names(TRI.import) <- "TRI"
+names(sand.dist) <- "Dist.Sand.Edge"
+names(gravel.dist) <- "Dist.Gravel.Edge"
+names(algae.dist) <- "Dist.Algae.Edge"
+names(mud.dist) <- "Dist.Mud.Edge"
+
+
+origin(bathy.import)== origin(algae.import)
+extent(bathy.import)== extent(algae.import) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(algae.import, bathy.import)
+r.new # new rez
+bathy.import# original
+algae.import#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+algae.import = crop(r.new, ex)
+
+origin(bathy.import)== origin(gravel.import)
+extent(bathy.import)== extent(gravel.import) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(gravel.import, bathy.import)
+r.new # new rez
+bathy.import# original
+gravel.import#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+gravel.import = crop(r.new, ex)
+
+origin(bathy.import)== origin(mud.import)
+extent(bathy.import)== extent(mud.import) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(mud.import, bathy.import)
+r.new # new rez
+bathy.import# original
+mud.import#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+mud.import = crop(r.new, ex)
+
+origin(bathy.import)== origin(sand.import)
+extent(bathy.import)== extent(sand.import) # check if the extent matches
+
+origin(bathy.import)== origin(simpson.import)
+extent(bathy.import)== extent(simpson.import) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(simpson.import, bathy.import)
+r.new # new rez
+bathy.import# original
+simpson.import#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+simpson.import = crop(r.new, ex)
+
+origin(bathy.import)== origin(velocity.import)
+extent(bathy.import)== extent(velocity.import) # check if the extent matches
+velocity.import <- mask(velocity.import,MPA) # remove areas outside MPA
+plot(velocity.import)
+
+origin(bathy.import)== origin(distance.import)
+extent(bathy.import)== extent(distance.import) # check if the extent matches
+
+origin(bathy.import)== origin(TRI.import)
+extent(bathy.import)== extent(TRI.import) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(TRI.import, bathy.import)
+r.new # new rez
+bathy.import# original
+TRI.import#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+TRI.import = crop(r.new, ex)
+
+origin(bathy.import)== origin(sand.dist)
+extent(bathy.import)== extent(sand.dist) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(sand.dist, bathy.import)
+r.new # new rez
+bathy.import# original
+sand.dist#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+sand.dist = crop(r.new, ex)
+
+origin(bathy.import)== origin(gravel.dist)
+extent(bathy.import)== extent(gravel.dist) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(gravel.dist, bathy.import)
+r.new # new rez
+bathy.import# original
+gravel.dist#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+gravel.dist = crop(r.new, ex)
+
+origin(bathy.import)== origin(algae.dist)
+extent(bathy.import)== extent(algae.dist) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(algae.dist, bathy.import)
+r.new # new rez
+bathy.import# original
+algae.dist#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+algae.dist = crop(r.new, ex)
+
+origin(bathy.import)== origin(mud.dist)
+extent(bathy.import)== extent(mud.dist) # check if the extent matches
+
+## resample the algae layer to match the depth layer 
+r.new = resample(mud.dist, bathy.import)
+r.new # new rez
+bathy.import# original
+mud.dist#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326" 
+ex = extent(bathy.import)
+mud.dist = crop(r.new, ex)
+
+
+variables <- stack(algae.import,
+                   gravel.import,
+                   mud.import,
+                   sand.import,
+                   simpson.import,
+                   velocity.import,
+                   distance.import,
+                   bathy.import,
+                   TRI.import,
+                   sand.dist,
+                   gravel.dist,
+                   algae.dist,
+                   mud.dist,
+                   quick = TRUE)
+plot(variables)
+
+# get the cropped outline of the island
+Arran <- st_read("Shapefiles/Arran_cropped")# both sf and sp due to differences in packages
+Arran2 <- as(Arran, 'Spatial')
+
+# both PA points from data
+gadoids.df <- ggplot2::fortify(results.2018, PA = "1")
+class(gadoids.df$PA)
+gadoids.df$PA <- as.factor(gadoids.df$PA)
+class(gadoids.df$PA)
+class(gadoids.df)
+
+# map with presence of cod and absence
+cod_map.all <- subset(gadoids.df,Species%in%c("morhua"))
+names(cod_map.all)
+
+cod.map.points <- ggplot() +
+  geom_sf() +
+  geom_sf(data=Arran) +
+  geom_sf(data=MPA, fill=NA) +
+  ggrepel::geom_label_repel(data=MPA,
+    aes(label = Zone, geometry = geometry),
+    segment.colour = NA,
+    nudge_y=-0.01,
+    stat = "sf_coordinates",
+    label.size = NA) +
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA, shape=PA), size=2, data = cod_map.all, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "red"))+
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(6.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("A")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+cod.map.points
+
+## making a quick copy 
+had_data <- had_sub.2018
+had_data$PA <- as.factor(had_data$PA)
+
+# map with presence of haddock and absence
+had.map.points <- ggplot() +
+  geom_sf() +
+  geom_sf(data=Arran) +
+  geom_sf(data=MPA, fill=NA) +
+  ggrepel::geom_label_repel(data=MPA,
+    aes(label = Zone, geometry = geometry),
+    segment.colour = NA,
+    nudge_y=-0.01,
+    stat = "sf_coordinates",
+    label.size = NA) +
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA, shape=PA), size=2, data = had_data, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "blue"))+
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("B")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+had.map.points
+
+## making a quick copy 
+whit_data <- whit_sub.2018
+whit_data$PA <- as.factor(whit_data$PA)
+
+# map with presence of whiting and absence
+whit.map.points <- ggplot() +
+  geom_sf() +
+  geom_sf(data=Arran) +
+  geom_sf(data=MPA, fill=NA) +
+  ggrepel::geom_label_repel(data=MPA,
+    aes(label = Zone, geometry = geometry),
+    segment.colour = NA,
+    nudge_y=-0.01,
+    stat = "sf_coordinates",
+    label.size = NA) +
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA, shape=PA), size=2, data = whit_data, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "dark orange"))+
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("C")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+whit.map.points
+
+
+library(ggpubr)
+# Create a figure by combining the different plots
+gadoid.results<- ggarrange(cod.map.points,had.map.points,whit.map.points,ncol = 2, nrow = 2)
+# Annotate the figure by adding a common labels
+annotate_figure(gadoid.results,
+                top = text_grob("Presence/absence of all three gadoid species 2013-2019", color = "black", face = "bold", size = 14),
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+
+```
+
+## Collinearity checks
+```{r need to run check for collinearity or correlations}
+names(cod_sub.2018)
+# pair-wise correlation among the explanatory variables
+# used a cod subset df of all the explanatory variable + MaxN PA for y
+
+source("HighlandStats_v6.r")
+
+pairs(~cod_sub.2018$Depth + cod_sub.2018$Algae + cod_sub.2018$Pebble+ cod_sub.2018$Gravel + cod_sub.2018$Sand+ cod_sub.2018$Seagrass+ cod_sub.2018$Mud +cod_sub.2018$mean_velocity  + cod_sub.2018$average.fetch  + cod_sub.2018$Simpson + cod_sub.2018$aspect + cod_sub.2018$slope + cod_sub.2018$tri + cod_sub.2018$roughness + cod_sub.2018$flowdir + cod_sub.2018$dist + cod_sub.2018$perim.area.ratio + cod_sub.2018$frac.dim.index + cod_sub.2018$Patch.Area + cod_sub.2018$sand.dist.edge + cod_sub.2018$pebble.dist.edge + cod_sub.2018$mud.dist.edge + cod_sub.2018$algae.dist.edge + cod_sub.2018$gravel.dist.edge,
+      lower.panel = panel.cor) # 
+
+pairs(~cod_sub.2018$Depth + cod_sub.2018$Algae + cod_sub.2018$Pebble+ cod_sub.2018$Gravel + cod_sub.2018$Sand+ cod_sub.2018$Seagrass+ cod_sub.2018$Mud +cod_sub.2018$mean_velocity + cod_sub.2018$Simpson + cod_sub.2018$aspect + cod_sub.2018$tri + cod_sub.2018$flowdir + cod_sub.2018$dist + cod_sub.2018$perim.area.ratio + cod_sub.2018$frac.dim.index + cod_sub.2018$Patch.Area + cod_sub.2018$sand.dist.edge + cod_sub.2018$pebble.dist.edge + cod_sub.2018$mud.dist.edge + cod_sub.2018$algae.dist.edge + cod_sub.2018$gravel.dist.edge,
+      lower.panel = panel.cor)  # removed slope, aspect, roughness, fetch - not much going on and colinear. Removed fetch as colinear with velocy. removed mud as not enough data + colinear. With algae lets just see for a big - TRI and roughness collin. remove one
+head(cod_sub.2018)
+table(cod_sub.2018$PA)
+str(cod_sub.2018)
+
+Z<-cbind(cod_sub.2018$Depth, cod_sub.2018$Algae, cod_sub.2018$Pebble, cod_sub.2018$Gravel, cod_sub.2018$Sand, cod_sub.2018$Seagrass, cod_sub.2018$Mud, cod_sub.2018$mean_velocity, cod_sub.2018$Simpson, cod_sub.2018$tri, cod_sub.2018$flowdir, cod_sub.2018$dist, cod_sub.2018$perim.area.ratio, cod_sub.2018$frac.dim.index, cod_sub.2018$Patch.Area, cod_sub.2018$sand.dist.edge, cod_sub.2018$pebble.dist.edge, cod_sub.2018$mud.dist.edge, cod_sub.2018$algae.dist.edge, cod_sub.2018$gravel.dist.edge) # everything in
+corvif(Z) ## a cut-off value of 5 or even 3 can be used to remove collinear variables - algae too high and mud - both relate to depth  - remove mud, either roughness or tRI, slope
+
+z1<-cbind(cod_sub.2018$Depth, cod_sub.2018$Pebble, cod_sub.2018$Gravel, cod_sub.2018$Sand, cod_sub.2018$Seagrass, cod_sub.2018$Mud, cod_sub.2018$mean_velocity, cod_sub.2018$Simpson, cod_sub.2018$tri, cod_sub.2018$flowdir, cod_sub.2018$dist, cod_sub.2018$dist.edge.patch, cod_sub.2018$perim.area.ratio, cod_sub.2018$frac.dim.index, cod_sub.2018$area)
+corvif(z1)
+
+```
+
+## Cod GAMM - Zone
+```{r GAMs - PA Cod - Mixed model Zone}
+library(gamm4)
+library(gratia)
+# Null GAMM
+gamm0 <- gamm4(PA ~ 1, random=~(1|Zone), data=cod_sub.2018, family=c("binomial")) 
+DN <- sum(residuals(gamm0$gam, type = "deviance")^2) # Deviance from NULL GAMM
+#DR <- sum(residuals(cod.pamm.Z1$gam, type = "deviance")^2) # Deviance from our GAMM
+#DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+
+#### cod mixed model Zone as random effect ####
+class(cod_sub.2018$Zone)
+cod_sub.2018$Zone <- as.factor(cod_sub.2018$Zone)
+
+cod.pamm.Z1 <- gamm4(PA ~ s(Algae, bs="tp") + s(Pebble, bs="tp") + s(Gravel, bs="tp") + s(Sand, bs="tp") + s(tri, bs="tp") + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") + s(Perimeter, bs="tp") + s(sand.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp") + s(P2A.ratio, bs="tp") +  s(frac.dim.index, bs="tp") + s(dist, bs="tp") , random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z1$gam) ## summary of gam
+summary(cod.pamm.Z1$mer)
+print(cod.pamm.Z1$mer, correlation=TRUE)## underlying mixed model
+appraise(cod.pamm.Z1$gam) # like gam.check()
+anova(cod.pamm.Z1$gam)
+draw(cod.pamm.Z1$gam)
+DR <- sum(residuals(cod.pamm.Z1$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.6467
+# remove frac dim index
+
+cod.pamm.Z2 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + mean_velocity + Simpson + Perimeter + sand.dist.edge + pebble.dist.edge + mud.dist.edge + P2A.ratio + dist, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z2$gam) ## summary of gam
+summary(cod.pamm.Z2$mer) ## underlying mixed model
+print(cod.pamm.Z2$mer, correlation=TRUE)## underlying mixed model
+anova(cod.pamm.Z2$gam)
+DR <- sum(residuals(cod.pamm.Z2$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.63668
+
+concurvity(cod.pamm.Z2$gam, full=TRUE)
+AIC(cod.pamm.Z1$mer, cod.pamm.Z2$mer) # both AIC and BIC lower
+BIC(cod.pamm.Z1$mer, cod.pamm.Z2$mer)
+mean(resid(cod.pamm.Z1$mer)^2)
+mean(resid(cod.pamm.Z2$mer)^2)
+#remove perimeter
+
+cod.pamm.Z3 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + mean_velocity + Simpson + sand.dist.edge + pebble.dist.edge + mud.dist.edge + P2A.ratio + dist, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z3$gam) ## summary of gam
+summary(cod.pamm.Z3$mer) ## underlying mixed model
+anova(cod.pamm.Z3$gam)
+DR <- sum(residuals(cod.pamm.Z3$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.78165
+
+concurvity(cod.pamm.Z3$gam, full=TRUE)
+AIC(cod.pamm.Z2$mer, cod.pamm.Z3$mer) # both AIC and BIC lower
+BIC(cod.pamm.Z2$mer, cod.pamm.Z3$mer)
+mean(resid(cod.pamm.Z2$mer)^2)
+mean(resid(cod.pamm.Z3$mer)^2)
+## remove P2A ratio
+
+cod.pamm.Z4 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + mean_velocity + Simpson + sand.dist.edge + pebble.dist.edge + mud.dist.edge + dist, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z4$gam) ## summary of gam
+summary(cod.pamm.Z4$mer) ## underlying mixed model
+anova(cod.pamm.Z4$gam)
+DR <- sum(residuals(cod.pamm.Z4$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.6928
+
+concurvity(cod.pamm.Z4$gam, full=TRUE)
+AIC(cod.pamm.Z3$mer, cod.pamm.Z4$mer) # AIC higher not by >3
+BIC(cod.pamm.Z3$mer, cod.pamm.Z4$mer) # BIC lower
+mean(resid(cod.pamm.Z3$mer)^2)
+mean(resid(cod.pamm.Z4$mer)^2)
+## remove dist
+
+cod.pamm.Z5 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + mean_velocity + Simpson + sand.dist.edge + pebble.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z5$gam) ## summary of gam
+summary(cod.pamm.Z5$mer) ## underlying mixed model
+anova(cod.pamm.Z5$gam)
+DR <- sum(residuals(cod.pamm.Z5$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.26283
+
+concurvity(cod.pamm.Z5$gam, full=TRUE)
+AIC(cod.pamm.Z4$mer, cod.pamm.Z5$mer) # AIC lower
+BIC(cod.pamm.Z4$mer, cod.pamm.Z5$mer) # BIC lower
+mean(resid(cod.pamm.Z4$mer)^2)
+mean(resid(cod.pamm.Z5$mer)^2)
+## remove peb dist edge
+
+cod.pamm.Z6 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + mean_velocity + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z6$gam) ## summary of gam
+summary(cod.pamm.Z6$mer) ## underlying mixed model
+anova(cod.pamm.Z6$gam)
+DR <- sum(residuals(cod.pamm.Z6$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 31.36652
+
+concurvity(cod.pamm.Z6$gam, full=TRUE)
+AIC(cod.pamm.Z5$mer, cod.pamm.Z6$mer) # AIC lower
+BIC(cod.pamm.Z5$mer, cod.pamm.Z6$mer) # BIC lower
+mean(resid(cod.pamm.Z5$mer)^2)
+mean(resid(cod.pamm.Z6$mer)^2)
+# remove velocity
+
+cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z7$gam) ## summary of gam
+summary(cod.pamm.Z7$mer) ## underlying mixed model
+anova(cod.pamm.Z7$gam)
+DR <- sum(residuals(cod.pamm.Z7$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 30.19446
+
+concurvity(cod.pamm.Z7$gam, full=TRUE)
+AIC(cod.pamm.Z6$mer, cod.pamm.Z7$mer) # AIC lower
+BIC(cod.pamm.Z6$mer, cod.pamm.Z7$mer) # BIC lower
+mean(resid(cod.pamm.Z6$mer)^2)
+mean(resid(cod.pamm.Z7$mer)^2)
+#remove pebble
+
+cod.pamm.Z8 <- gamm4(PA ~ s(Algae, bs="tp") + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z8$gam) ## summary of gam
+summary(cod.pamm.Z8$mer) ## underlying mixed model
+anova(cod.pamm.Z8$gam)
+DR <- sum(residuals(cod.pamm.Z8$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 29.81346
+
+concurvity(cod.pamm.Z8$gam, full=TRUE)
+AIC(cod.pamm.Z7$mer, cod.pamm.Z8$mer) # AIC lower
+BIC(cod.pamm.Z7$mer, cod.pamm.Z8$mer) # BIC lower
+mean(resid(cod.pamm.Z7$mer)^2)
+mean(resid(cod.pamm.Z8$mer)^2)
+
+#install.packages("AICcmodavg")
+library(AICcmodavg)
+
+#define list of models
+models <- list(cod.pamm.Z1$mer, cod.pamm.Z2$mer, cod.pamm.Z3$mer, cod.pamm.Z4$mer, cod.pamm.Z5$mer, cod.pamm.Z6$mer, cod.pamm.Z7$mer, cod.pamm.Z8$mer)
+
+#specify model names
+mod.names <- c("cod.pamm.Z1", "cod.pamm.Z2", "cod.pamm.Z3", "cod.pamm.Z4", "cod.pamm.Z5", "cod.pamm.Z6", "cod.pamm.Z7", "cod.pamm.Z8")
+
+#calculate AIC of each model
+aictab(cand.set = models, modnames = mod.names)
+
+AIC(cod.pamm.Z1$mer,cod.pamm.Z2$mer,cod.pamm.Z3$mer,cod.pamm.Z4$mer,cod.pamm.Z5$mer, cod.pamm.Z6$mer, cod.pamm.Z7$mer, cod.pamm.Z8$mer)
+BIC(cod.pamm.Z1$mer,cod.pamm.Z2$mer,cod.pamm.Z3$mer,cod.pamm.Z4$mer,cod.pamm.Z5$mer, cod.pamm.Z6$mer, cod.pamm.Z7$mer, cod.pamm.Z8$mer)
+
+summary(cod.pamm.Z7$gam)
+anova(cod.pamm.Z7$gam)
+```
+
+## Cod - Morans
+```{r - trying a morans test on residuals}
+## checking morans
+#load the needed packages 
+library(spdep)
+library(sp)
+library(spatialreg)
+
+## Morans test for Mixed model
+# get residuals - cod.pamm.Z7
+model.resid2 <- residuals.gam(cod.pamm.Z7$gam, type="deviance")
+
+# Get spatial data 
+names(cod_sub.2018)
+spdat <- SpatialPointsDataFrame(cbind(cod_sub.2018$Longitude, cod_sub.2018$Latitude), cod_sub.2018)
+
+# Weights matrix with the 10 nearest neighbors, in weights list form 
+lstw  <- nb2listw(knn2nb(knearneigh(spdat, k = 10)))
+
+# Moran's test using the residuals of the model - cod.pamm.Z6 - mixed model with Zone
+MT5 <- moran.test(residuals(cod.pamm.Z7$mer), lstw, randomisation = FALSE)
+MT5
+#Moran I statistic standard deviate = 3.4855, p-value = 0.0002456
+#alternative hypothesis: greater
+#sample estimates:
+#Moran I statistic       Expectation          Variance 
+ #    0.0644139852     -0.0020533881      0.0003636525 
+
+## Monte Carlo sim
+moran.mc(model.resid2, lstw, nsim=1000)
+# statistic = 0.11325, observed rank = 1001, p-value = 0.000999
+# alternative hypothesis: greater
+
+```
+
+## Cod - CV & AUC
+```{r Area under curve}
+# Compute AUC for predicting Class with the model
+#### cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(cod.pamm.Z7$gam) ## summary of gam
+names(cod_sub.2018)
+anova(cod.pamm.Z7$gam)
+
+library(ROCR)
+library(pROC)
+
+class(cod_sub.2018$PA)
+par(mfrow=c(1,1))
+par(mar=c(4,4,2,2))
+#get the predicted probabilities for each sample
+prob <- predict(cod.pamm.Z7$gam, type="response")
+
+# make a ROCR prediction object using the predicted values 
+# instruct to do all as numeric as "Error: Format of predictions is invalid. It couldn't be coerced to a list." 
+pred <- prediction(as.numeric(prob), as.numeric(cod_sub.2018$PA))
+
+#now calculate AUC
+auc <- performance(pred, "auc")@y.values[[1]]
+auc # RC = 0.8463186
+
+#now plot ROC curve
+perf <- performance( pred, "tpr", "fpr")
+plot(perf)
+
+# make it look nicer
+data.frame(x = perf@x.values[[1]],
+           y = perf@y.values[[1]]) %>% 
+  ggplot(aes(x, y))+
+    geom_abline(slope = 1, intercept = 0,
+              linetype = "dotted",
+              size = 1)+
+  geom_path(colour = "#e50083",
+            size = 1)+
+  annotate("label", x = 0.1, y = 1, label = "AUC = 0.85", size=5) +
+  theme_classic()+
+  labs(x = "1 - Specificity",
+       y = "Sensitivity")
+
+auc_ROCR <- performance(pred, measure = "auc")
+auc_ROCR@y.values[[1]] # 0.8463186
+
+sum(cod_sub.2018$PA == 0) / nrow(cod_sub.2018) # 0.5307377
+
+#### cross validation testing and AUC and Confusion matric ####
+
+splitdf <- function(dataframe, seed=NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  index <- 1:nrow(dataframe)
+  trainindex <- sample(index, trunc(length(index)/1/4))
+  trainset <- dataframe[trainindex, ]
+  testset <- dataframe[-trainindex, ]
+  list(trainset=trainset,testset=testset)# splitting the data
+}
+#apply the function
+splits <- splitdf(cod_sub.2018, seed=808)
+
+#it returns a list - two data frames called trainset and testset
+str(splits)
+
+# there are 122 to train and 366 test
+lapply(splits,nrow)
+
+#view the first few columns in each data frame
+lapply(splits,head)
+
+# save the training and testing sets as data frames
+datv <- splits$trainset# data for validation
+datf <- splits$testset #data for fitting
+str(datv)#
+str(datf)#
+table(datv$PA)#0=66 1=56
+table(datf$PA)#0=193 1=173
+datv$PA <- as.factor(datv$PA)
+datf$PA <- as.factor(datf$PA)
+names(datf)
+
+### Prediction ####
+
+Fitting_BN1 <- predict(cod.pamm.Z7$gam,newdata=datf,se.fit=TRUE)
+Fitting_BN1 <- as.data.frame(Fitting_BN1)
+datf <- cbind(datf, Fitting_BN1)
+head(datf)
+names(datf)
+
+summary(datf)
+
+library(caret)#needs dplyr and tidyr
+#### cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+str(datv)
+anova(cod.pamm.Z7$gam)
+datv$PA <- as.factor(datv$PA)
+levels(datv$PA)
+datv <- na.omit(datv)
+mod_fit <- train(PA ~ Algae + Pebble + Gravel + Sand + tri + Simpson + mean_velocity + sand.dist.edge + mud.dist.edge,
+                 family = binomial(link = "cloglog"),
+                 Parallel=TRUE,
+                 data=datv, method="gam")# training data set
+summary(mod_fit)
+exp(coef(mod_fit$finalModel))
+
+predict(mod_fit, newdata=datf)
+predict(mod_fit, newdata=datf, type="prob")
+yy <- as.data.frame(predict)
+head(yy)
+varImp(mod_fit) #variable importance
+
+
+pred = predict(mod_fit, newdata=datf)#testing dataset
+accuracy <- table(pred, datf[,"PA"])
+sum(diag(accuracy))/sum(accuracy)
+## 0.699
+pred = predict(mod_fit, newdata=datf)
+str(pred)
+table(pred)
+str(datf)#
+datf$PA <- factor(datf$PA)
+confusionMatrix(data=pred, datf$PA)
+#               Accuracy : 0.6995         
+ #                95% CI : (0.6496, 0.746)
+  #  No Information Rate : 0.5273         
+   # P-Value [Acc > NIR] : 1.446e-11      
+                                         
+    #              Kappa : 0.3946         
+                                         
+# Mcnemar's Test P-Value : 0.2152         
+                                         
+ #           Sensitivity : 0.7513         
+  #          Specificity : 0.6416         
+   #      Pos Pred Value : 0.7005         
+    #     Neg Pred Value : 0.6981         
+     #        Prevalence : 0.5273         
+      #   Detection Rate : 0.3962         
+#   Detection Prevalence : 0.5656         
+ #     Balanced Accuracy : 0.6965       
+
+# TSS = TPR + TNR -1
+#  true positive rate (sensitivity)
+#  true negative rate (specificity)
+# TSS = 0.7513 + 0.6416  -1
+0.7513   + 0.6416 -1
+# = 0.3929
+```
+
+## Cod model predictions
+```{r Cod model Predictions}
+library(lme4)
+#### cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+summary(cod.pamm.Z7$gam)
+names(cod_sub.2018)
+new.data.algae <- with(cod_sub.2018, expand.grid(Algae = seq(min(Algae), max(Algae), length = 200),
+                                Pebble = mean(Pebble),
+                                Gravel = mean(Gravel),                                
+                                Sand = mean(Sand),
+                                tri = mean(tri),
+                                Simpson = mean(Simpson),
+                                sand.dist.edge = mean(sand.dist.edge),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.algae <- predict(cod.pamm.Z7$gam, new.data.algae, type = "link", se.fit = TRUE)
+pred.algae <- cbind(pred.algae, new.data.algae)
+pred.algae <- transform(pred.algae, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+algae.model.1 <- ggplot(pred.algae, aes(x = Algae, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=Algae, y=PA)) +
+  xlab("Proportional algae cover") +
+  ggtitle("A") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+algae.model.1 
+
+new.data.Gravel <- with(cod_sub.2018, expand.grid(Gravel = seq(min(Gravel), max(Gravel), length = 200),
+                                Algae = mean(Algae),
+                                Pebble = mean(Pebble),
+                                Sand = mean(Sand),
+                                tri = mean(tri),
+                                Simpson = mean(Simpson),
+                                sand.dist.edge = mean(sand.dist.edge),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.Gravel <- predict(cod.pamm.Z7$gam, new.data.Gravel, type = "link", se.fit = TRUE)
+pred.Gravel <- cbind(pred.Gravel, new.data.Gravel)
+pred.Gravel <- transform(pred.Gravel, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Gravel.model.1 <- ggplot(pred.Gravel, aes(x = Gravel, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=Gravel, y=PA)) +
+  xlab("Proportional gravel cover") +
+  ggtitle("B") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Gravel.model.1
+
+new.data.Sand <- with(cod_sub.2018, expand.grid(Sand = seq(min(Sand), max(Sand), length = 200),
+                                Algae = mean(Algae),
+                                Gravel = mean(Gravel),
+                                Pebble = mean(Pebble),
+                                tri = mean(tri),
+                                Simpson = mean(Simpson),
+                                sand.dist.edge = mean(sand.dist.edge),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.Sand <- predict(cod.pamm.Z7$gam, new.data.Sand, type = "link", se.fit = TRUE)
+pred.Sand <- cbind(pred.Sand, new.data.Sand)
+pred.Sand <- transform(pred.Sand, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Sand.model.1 <- ggplot(pred.Sand, aes(x = Sand, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=Sand, y=PA)) +
+  xlab("Proportional sand cover") +
+  ggtitle("C") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Sand.model.1
+
+new.data.TRI <- with(cod_sub.2018, expand.grid(tri = seq(min(tri), max(tri), length = 200),
+                                Algae = mean(Algae),
+                                Gravel = mean(Gravel),
+                                Pebble = mean(Pebble),
+                                Sand = mean(Sand),
+                                Simpson = mean(Simpson),
+                                sand.dist.edge = mean(sand.dist.edge),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.TRI <- predict(cod.pamm.Z7$gam, new.data.TRI, type = "link", se.fit = TRUE)
+pred.TRI <- cbind(pred.TRI, new.data.TRI)
+pred.TRI <- transform(pred.TRI, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+tri.model.1 <- ggplot(pred.TRI, aes(x = tri, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=tri, y=PA)) +
+  xlab("Terrain ruggedness index") +
+  ggtitle("D") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+tri.model.1
+
+new.data.Simpson <- with(cod_sub.2018, expand.grid(Simpson = seq(min(Simpson), max(Simpson), length = 200),
+                                Algae = mean(Algae),
+                                Gravel = mean(Gravel),
+                                Pebble = mean(Pebble),
+                                Sand = mean(Sand),
+                                tri = mean(tri),
+                                sand.dist.edge = mean(sand.dist.edge),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.Simpson <- predict(cod.pamm.Z7$gam, new.data.Simpson, type = "link", se.fit = TRUE)
+pred.Simpson <- cbind(pred.Simpson, new.data.Simpson)
+pred.Simpson <- transform(pred.Simpson, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Simpson.model.1 <- ggplot(pred.Simpson, aes(x = Simpson, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=Simpson, y=PA)) +
+  xlab("Simpson Diversity Index") +
+  ggtitle("E") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Simpson.model.1
+
+new.data.Sand.edge <- with(cod_sub.2018, expand.grid(sand.dist.edge = seq(min(sand.dist.edge), max(sand.dist.edge), length = 200),
+                                Algae = mean(Algae),
+                                Gravel = mean(Gravel),
+                                Pebble = mean(Pebble),
+                                Sand = mean(Sand),
+                                tri = mean(tri),
+                                Simpson = mean(Simpson),
+                                mud.dist.edge = mean(mud.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.Sand.edge <- predict(cod.pamm.Z7$gam, new.data.Sand.edge, type = "link", se.fit = TRUE)
+pred.Sand.edge <- cbind(pred.Sand.edge, new.data.Sand.edge)
+pred.Sand.edge <- transform(pred.Sand.edge, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Sand.edge.model.1 <- ggplot(pred.Sand.edge, aes(x = sand.dist.edge, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=sand.dist.edge, y=PA)) +
+  geom_vline(xintercept=0, linetype='dotted', col = 'red', size=1) +
+  xlab("Distance to sand patch edge (m)") +
+  ggtitle("F") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Sand.edge.model.1
+
+
+new.data.mud.edge <- with(cod_sub.2018, expand.grid(mud.dist.edge = seq(min(mud.dist.edge), max(mud.dist.edge), length = 200),
+                                Algae = mean(Algae),
+                                Gravel = mean(Gravel),
+                                Sand = mean(Sand),
+                                Pebble = mean(Pebble),
+                                tri = mean(tri),
+                                Simpson = mean(Simpson),
+                                sand.dist.edge = mean(sand.dist.edge)))
+
+ilink <- family(cod.pamm.Z7$gam)$linkinv
+pred.mud.edge <- predict(cod.pamm.Z7$gam, new.data.mud.edge, type = "link", se.fit = TRUE)
+pred.mud.edge <- cbind(pred.mud.edge, new.data.mud.edge)
+pred.mud.edge <- transform(pred.mud.edge, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+mud.edge.model.1 <- ggplot(pred.mud.edge, aes(x = mud.dist.edge, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  geom_vline(xintercept=0, linetype='dotted', col = 'red', size=1) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=cod_sub.2018, aes(x=mud.dist.edge, y=PA)) +
+  xlab("Distance to mud patch edge") +
+  ggtitle("E") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+mud.edge.model.1
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+cod.results<- ggarrange(algae.model.1,Gravel.model.1,Sand.model.1,tri.model.1, Simpson.model.1,Sand.edge.model.1, mud.edge.model.1 ,ncol = 3, nrow = 3)
+# Annotate the figure by adding a common labels
+annotate_figure(cod.results,
+                left = text_grob("Probability of juvenile presence", color = "black", rot = 90))
+```
+
+##Visualisation - Cod
+```{r Visualising}
+
+#### cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+library(data.table)
+library(vroom)
+####  Put the predicted data into our large dataset ####
+#Load visualisation data
+visualisation_data_arran <- vroom("Big_data_Mar24.csv", delim=",")
+summary(visualisation_data_arran)
+dim(visualisation_data_arran)
+cod_presence.model.visualisation <- as.vector(predict.gam(cod.pamm.Z7$gam, visualisation_data_arran, type="response"))
+
+#Appending site
+cod_vis <- data.frame(Site=1:27992,Prediction=cod_presence.model.visualisation)
+visualisation_data_arran <- tibble::rowid_to_column(visualisation_data_arran, "Site")
+
+#Merge onto visualisation frame PA
+predict_merge.cod<- merge(x=visualisation_data_arran, y=cod_vis, "Site")
+cod.pred.sub <- dplyr::select(predict_merge.cod, Longitude, Latitude, Prediction)
+cod.pred.sub <- na.omit(cod.pred.sub)
+cod.pred.sub %>% distinct(Longitude, Latitude, .keep_all = TRUE)
+
+## irregualr cells make into a raster
+library(raster)
+library(akima)
+
+steps <- 1000
+isu.cod <- with(cod.pred.sub, interp(Longitude, Latitude, Prediction , duplicate = "mean",
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+cod.raster <- raster(isu.cod)
+cod.raster
+plot(cod.raster)
+# make UTM30N
+proj4string(cod.raster) <- CRS("+init=epsg:32630")
+plot(cod.raster)
+
+Arran2 <- spTransform(Arran2,
+                        crs(cod.raster)) # just making sure arran matches
+
+library(sf)
+MPA = rgdal::readOGR("Shapefiles/MPA")
+MPA
+MPA@proj4string # check crs
+st_crs(MPA)
+class(MPA) # convert to sf
+MPA2 <- st_as_sf(MPA)
+MPA2 <- st_transform(MPA2, "EPSG:4326")
+st_bbox(MPA2)
+
+
+# get the cropped outline of the island
+Arran <- st_read("Shapefiles/Arran_cropped")
+Arran2 <- as(Arran, 'Spatial')
+plot(Arran2)
+Arran2
+cod.raster
+
+Arran2 <- spTransform(Arran2,
+                        crs(cod.raster))
+
+# mask of the raster by polygon
+plot(cod.raster)
+plot(Arran2, add=TRUE)
+cod.raster
+masked.cod<- mask(cod.raster,Arran2, inverse=TRUE) # remove areas on land
+masked.cod
+plot(masked.cod)
+plot(Arran2, add=TRUE)
+
+## save it
+#writeRaster(masked.cod,'Rasters/masked.cod3.tif')
+
+library(rgdal)
+library(raster)
+library(sp)
+## had some issues getting this convert to Lat Long in R (Grrrrr!) did it in QGIS
+cod.pred.raster <- raster("Rasters/Cod_pred_LlatLong.tif")
+cod.pred.raster
+names(cod.pred.raster) <- "Cod.Prediction"
+plot(cod.pred.raster)
+
+## making a quick copy for...reasons
+cod_data <- cod_sub.2018
+cod_data$PA <- as.factor(cod_data$PA)
+# map with predicted whiting and real points
+
+cod.pred.map<- ggplot()+
+  geom_raster(data = as.data.frame(cod.pred.raster, xy = TRUE), aes(x, y, fill = Cod.Prediction ))+
+  scale_fill_viridis_c(option="viridis", na.value = "white", name="Probability\npresence")+
+  geom_sf(data = MPA2, fill=NA,colour="#D55E00", size=5)+
+  geom_sf(data=Arran)+
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA), size=1, data = cod_data, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "white"))+
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE)+
+  ggtitle("A")+
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(6.5, "in"),
+                         style = north_arrow_fancy_orienteering)+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+cod.pred.map
+
+
+```
+
+## Error maps cod
+```{r error maps}
+#### cod.pamm.Z7 <- gamm4(PA ~ s(Algae, bs="tp") + Pebble + Gravel + Sand + tri + Simpson + sand.dist.edge + mud.dist.edge, random=~(1|Zone), data=cod_sub.2018, family=c("binomial"), REML = TRUE)
+
+
+## trying with original data points - observed
+#Load visualisation data
+observed_points <- cod_sub.2018 # copy so as to not overwrite if you make a mistake
+summary(observed_points)
+names(observed_points)
+
+## predict model
+cod_presence_observed <- as.vector(predict.gam(cod.pamm.Z7$gam, observed_points, se.fit=TRUE, interval="confidence", type="response")) #predict model
+
+#Appending site
+cod_presence_observed<-as.data.frame(cod_presence_observed) # make df
+cod_presence_observed <- tibble::rowid_to_column(cod_presence_observed, "ID") # add row ID
+summary(cod_presence_observed)
+
+#Merge onto visualisation frame PA
+predict_obs.cod <- merge(x=observed_points, y=cod_presence_observed, "ID") # join together
+predict_obs.cod$error<-predict_obs.cod$fit - predict_obs.cod$PA  # cal error
+predict_obs.cod <- na.omit(predict_obs.cod)
+summary(predict_obs.cod)
+
+library(automap)
+
+library(rgdal)
+
+# interplating presence/absence raster
+names(predict_obs.cod)
+
+xy.obs <- predict_obs.cod[,c(4,3)]
+
+obs_projected <- SpatialPointsDataFrame(coords = xy.obs, data = predict_obs.cod,
+                             proj4string = CRS("+proj=longlat +datum=WGS84"))
+proj4string(obs_projected) <- CRS("+init=EPSG:4326")
+summary(obs_projected)
+obs_projected <- spTransform(obs_projected, CRS("+init=epsg:32630")) # projecting
+summary(obs_projected)
+
+# draw location at which krig created (new data) - using the same number of points as the extracted bathy point layer
+depth.reg <- spsample(MPA, 218928, type="regular")  
+#convert to spatial pixels
+depth.grid <- SpatialPixels(depth.reg) 
+summary(depth.grid)
+
+# other projected version if needed
+depth.grid.2 <- spTransform(depth.grid,
+                        crs(obs_projected)) 
+summary(depth.grid.2)
+
+error.krig <- autoKrige(error~1, 
+                            input_data=obs_projected, 
+                            new_data=depth.grid.2,
+                            remove_duplicates = TRUE)
+
+
+plot(error.krig)
+
+data_kig_error<-as.data.frame(error.krig$krige_output)
+data_kig_error<-data_kig_error[,1:3]
+summary(data_kig_error)
+## irregular grid raster will have to fix
+#### make a raster of krig output ####
+library(raster)
+library(akima)
+library(data.table)
+data_kig_error.table <- data.table(as.data.frame(data_kig_error, xy = TRUE))
+setnames(data_kig_error.table, "var1.pred", "Error")
+setnames(data_kig_error.table, "x1", "Longitude")
+setnames(data_kig_error.table, "x2", "Latitude")
+attributes(data_kig_error.table)
+
+steps <- 1000
+isu.cod.error <- with(data_kig_error.table, interp(Longitude, Latitude, Error , 
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+cod.error.raster <- raster(isu.cod.error)
+plot(cod.error.raster)
+crs(cod.error.raster) <- "+proj=longlat +datum=WGS84"
+proj4string(cod.error.raster) <- CRS("+init=epsg:32630")
+
+# mask of the raster by polygon
+plot(cod.error.raster)
+plot(Arran2, add=TRUE)
+cod.error.raster
+
+masked.cod.error <- mask(cod.error.raster,Arran2, inverse=TRUE) # remove areas on land
+masked.cod.error
+names(masked.cod.error) <- "Error"
+masked.cod.error
+plot(masked.cod.error)
+plot(Arran2, add=TRUE)
+
+# save it
+#writeRaster(masked.cod.error,"images/masked.error3.tif", overwrite=TRUE)
+
+# make a df of the raster to plotin ggplot - importing let long converted in QGIS due to R crashing
+cod.pred.error<- raster("Rasters/Cod_error_LlatLong.tif")
+cod.pred.error
+names(cod.pred.error) <- "Cod.Error"
+plot(cod.pred.error)
+
+## making a quick copy for...reasons
+cod_data <- cod_sub.2018
+cod_data$PA <- as.factor(cod_data$PA)
+
+library(ggplot2)
+library(ggspatial)
+library(viridis)
+## mapping in error 
+
+cod.map.error<- ggplot()+
+  geom_raster(data = as.data.frame(cod.pred.error, xy = TRUE), aes(x, y, fill = Cod.Error ))+
+  scale_fill_viridis_c(option="magma", na.value = "white", name="Probability\nerror") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+cod.map.error
+```
+
+##Extrapolation - cod
+```{r degree of extrpolation of cod data}
+library(dismo)
+cod.variables <- stack(algae.import,
+                   gravel.import,
+                   sand.import,
+                   simpson.import,
+                   TRI.import,
+                   sand.dist,
+                   mud.dist,
+                   quick = TRUE)
+#### running a MESS for cod variables #####
+
+summary(variables) # predictor raster object
+names(cod_sub.2018)
+cod.xy <- cod_sub.2018[,c(4,3)] # points where from surveys
+cod.reference_points <- raster::extract(cod.variables, cod.xy) # point sampling for your sites
+cod.ms <- mess(x=cod.variables, v=cod.reference_points, full=FALSE)
+cod.mss <- mess(x=cod.variables, v=cod.reference_points, full=TRUE)
+plot(cod.ms)
+plot(cod.mss)
+
+## resample the new layer to match the depth layer 
+r.new = resample(cod.ms, bathy.import)
+r.new # new rez
+bathy.import# original
+cod.ms#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326"
+ex = extent(bathy.import)
+cod.ms = crop(r.new, ex)
+
+cod.ms <- mask(cod.ms,MPA2) # remove areas outside MPA
+plot(cod.ms)
+cod.ms
+#### plotting in ggplot ####
+
+cod.map.extrap<- ggplot()+
+  geom_raster(data = as.data.frame(cod.ms, xy = TRUE), aes(x, y, fill = mess  ))+
+  scale_fill_viridis_c(option="mako", na.value = "white", name="MESS\nValue") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+cod.map.extrap
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+cod.prediction.maps<- ggarrange(cod.pred.map, cod.map.error, cod.map.extrap,ncol = 2, nrow=2)
+# Annotate the figure by adding a common labels
+annotate_figure(cod.prediction.maps,
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+
+```
+
+## Haddock full GAMM
+```{r full game model selection}
+#Running GAMS
+library(gratia)
+library(gamm4)
+library(lattice)
+library(jtools)
+# making sure the factors are not characters
+names(had_sub.2018)
+
+# Null GAMM
+gamm0 <- gamm4(PA ~ 1, random=~(1|Zone), data=had_sub.2018, family=c("binomial")) 
+DN <- sum(residuals(gamm0$gam, type = "deviance")^2) # Deviance from NULL GAMM
+
+
+#### haddock mixed model Zone as random effect ####
+
+had.pamm.Z1 <- gamm4(PA ~ s(Depth, bs="tp") + s(Algae, bs="tp") + s(Pebble, bs="tp") + s(Gravel, bs="tp") + s(Sand, bs="tp") + s(tri, bs="tp") + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter, bs="tp") + s(P2A.ratio, bs="tp") + sand.dist.edge + pebble.dist.edge + mud.dist.edge + gravel.dist.edge, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z1$gam) ## summary of gam
+summary(had.pamm.Z1$mer) ## underlying mixed model
+appraise(had.pamm.Z1$gam) # like gam.check()
+anova(had.pamm.Z1$gam)
+draw(had.pamm.Z1$gam)
+# remove perimter
+
+had.pamm.Z2 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Pebble + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(P2A.ratio, bs="tp") + s(sand.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z2 $gam) ## summary of gam
+summary(had.pamm.Z2 $mer) ## underlying mixed model
+anova(had.pamm.Z2 $gam)
+AIC(had.pamm.Z1$mer, had.pamm.Z2$mer) #lower
+BIC(had.pamm.Z1$mer, had.pamm.Z2$mer) #lower
+DR <- sum(residuals(had.pamm.Z2$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.37116
+# remove pebble
+
+had.pamm.Z3 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(P2A.ratio, bs="tp") + s(sand.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z3 $gam) ## summary of gam
+summary(had.pamm.Z3 $mer) ## underlying mixed model
+anova(had.pamm.Z3 $gam)
+AIC(had.pamm.Z2$mer, had.pamm.Z3$mer ) # lower
+BIC(had.pamm.Z2$mer, had.pamm.Z3$mer) #lower
+DR <- sum(residuals(had.pamm.Z3$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.37271
+# remove Peb dist
+
+had.pamm.Z4 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(P2A.ratio, bs="tp") + s(sand.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z4 $gam) ## summary of gam
+summary(had.pamm.Z4 $mer) ## underlying mixed model
+anova(had.pamm.Z4 $gam)
+AIC(had.pamm.Z3$mer, had.pamm.Z4$mer ) #lower
+BIC(had.pamm.Z3$mer, had.pamm.Z4$mer) #lower
+DR <- sum(residuals(had.pamm.Z4$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.37155
+# remove p2a
+
+had.pamm.Z5 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(sand.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z5 $gam) ## summary of gam
+summary(had.pamm.Z5 $mer) ## underlying mixed model
+anova(had.pamm.Z5 $gam)
+AIC(had.pamm.Z4$mer, had.pamm.Z5$mer ) # higher by <3
+BIC(had.pamm.Z4$mer, had.pamm.Z5$mer) #lower
+DR <- sum(residuals(had.pamm.Z5$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.36609
+# remove grav dist
+
+had.pamm.Z6 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(sand.dist.edge, bs="tp") + s(mud.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z6 $gam) ## summary of gam
+summary(had.pamm.Z6 $mer) ## underlying mixed model
+anova(had.pamm.Z6 $gam)
+AIC(had.pamm.Z5$mer, had.pamm.Z6$mer ) # higher by <3
+BIC(had.pamm.Z5$mer, had.pamm.Z6$mer) #lower
+DR <- sum(residuals(had.pamm.Z6$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.35539
+# remove mud dist edge
+
+had.pamm.Z7 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + s(Gravel, bs="tp") + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(sand.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z7 $gam) ## summary of gam
+summary(had.pamm.Z7 $mer) ## underlying mixed model
+anova(had.pamm.Z7 $gam)
+AIC(had.pamm.Z6$mer, had.pamm.Z7$mer ) # higher by <3
+BIC(had.pamm.Z6$mer, had.pamm.Z7$mer) #lower
+DR <- sum(residuals(had.pamm.Z7$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.31257
+# remove gravel
+
+had.pamm.Z8 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson + s(Patch.Area, bs="tp") + s(sand.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z8 $gam) ## summary of gam
+summary(had.pamm.Z8 $mer) ## underlying mixed model
+anova(had.pamm.Z8 $gam)
+AIC(had.pamm.Z7$mer, had.pamm.Z8$mer ) # higher by <3
+BIC(had.pamm.Z7$mer, had.pamm.Z8$mer) #lower
+DR <- sum(residuals(had.pamm.Z8$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.04654
+# remove area
+
+had.pamm.Z9 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson + s(sand.dist.edge, bs="tp"), random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z9 $gam) ## summary of gam
+summary(had.pamm.Z9 $mer) ## underlying mixed model
+anova(had.pamm.Z9 $gam)
+AIC(had.pamm.Z8$mer, had.pamm.Z9$mer ) # higher by <3
+BIC(had.pamm.Z8$mer, had.pamm.Z9$mer) #lower
+DR <- sum(residuals(had.pamm.Z9$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 39.69104
+# remove sand dist edge
+
+had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z10 $gam) ## summary of gam
+summary(had.pamm.Z10 $mer) ## underlying mixed model
+anova(had.pamm.Z10 $gam)
+AIC(had.pamm.Z9$mer, had.pamm.Z10$mer ) # higher by <3
+BIC(had.pamm.Z9$mer, had.pamm.Z10$mer) #lower
+DR <- sum(residuals(had.pamm.Z10$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 39.48081
+# remove sand 
+
+had.pamm.Z11 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z11 $gam) ## summary of gam
+summary(had.pamm.Z11 $mer) ## underlying mixed model
+anova(had.pamm.Z11 $gam)
+AIC(had.pamm.Z10$mer, had.pamm.Z11$mer ) # higher by <3
+BIC(had.pamm.Z10$mer, had.pamm.Z11$mer) #lower
+DR <- sum(residuals(had.pamm.Z11$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 38.97992
+# remove tri
+
+had.pamm.Z12 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z12 $gam) ## summary of gam
+summary(had.pamm.Z12 $mer) ## underlying mixed model
+anova(had.pamm.Z12 $gam)
+AIC(had.pamm.Z11$mer, had.pamm.Z12$mer ) # higher by <3
+BIC(had.pamm.Z11$mer, had.pamm.Z12$mer) #lower
+DR <- sum(residuals(had.pamm.Z12$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+
+library(AICcmodavg)
+
+#define list of models
+models <- list(had.pamm.Z1$mer, had.pamm.Z2$mer, had.pamm.Z3$mer, had.pamm.Z4$mer, had.pamm.Z5$mer, had.pamm.Z6$mer, had.pamm.Z7$mer, had.pamm.Z8$mer, had.pamm.Z9$mer, had.pamm.Z10$mer, had.pamm.Z11$mer, had.pamm.Z12$mer)
+
+#specify model names
+mod.names <- c("Model.1", "Model.2", "Model.3", "Model.4", "Model.5", "Model.6", "Model.7", "Model.8", "Model.9", "Model.10", "Model.11", "Model.12")
+
+#calculate AIC of each model
+aictab(cand.set = models, modnames = mod.names)
+
+BIC(had.pamm.Z1$mer,had.pamm.Z2$mer,had.pamm.Z3$mer,had.pamm.Z4$mer,had.pamm.Z5$mer,had.pamm.Z6$mer,had.pamm.Z7$mer,had.pamm.Z8$mer,had.pamm.Z9$mer,had.pamm.Z10$mer,had.pamm.Z11$mer,had.pamm.Z12$mer)
+
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(had.pamm.Z10 $gam)
+anova(had.pamm.Z10 $gam)
+
+```
+
+## Haddock - Morans
+```{r Morans test on haddock}
+
+library(spdep)
+library(sp)
+library(spatialreg)
+# stand had gam
+# had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+# Get spatial data 
+names(had_sub.2018)
+spdat <- SpatialPointsDataFrame(cbind(had_sub.2018$Longitude, had_sub.2018$Latitude), had_sub.2018)
+
+# Weights matrix with the 10 nearest neighbors, in weights list form 
+lstw  <- nb2listw(knn2nb(knearneigh(spdat, k = 10)))
+
+# get residuals - had.pamm.Z6
+model.resid3 <- residuals.gam(had.pamm.Z10$gam, type="deviance")
+
+# Moran's test using the residuals of the model - had.pamm.Z10 - mixed model with Zone
+MT5 <- moran.test(residuals(had.pamm.Z10$mer), lstw, randomisation = FALSE)
+MT5
+#Moran I statistic standard deviate = 0.52295, p-value = 0.3005
+#alternative hypothesis: greater
+#sample estimates:
+#Moran I statistic       Expectation          Variance 
+ #    0.0079191393     -0.0020533881      0.0003636525  
+
+## Monte Carlo sim
+moran.mc(model.resid3, lstw, nsim=1000)
+# statistic = 0.0079192, observed rank = 689, p-value = 0.3117
+
+```
+
+## Haddock - AUC
+```{r Haddock Area under Curve}
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+# Compute AUC for predicting Class with the model
+summary(had.pamm.Z10$gam)
+summary(had.pamm.Z10$mer)
+anova(had.pamm.Z10$gam)
+library(ROCR)
+library(pROC)
+class(had_sub.2018$PA)
+par(mfrow=c(1,1))
+par(mar=c(4,4,2,2))
+#get the predicted probabilities for each sample
+prob <- predict(had.pamm.Z10$gam, type="response")
+
+# make a ROCR prediction object using the predicted values 
+# instruct to do all as numeric as "Error: Format of predictions is invalid. It couldn't be coerced to a list." 
+pred <- prediction(as.numeric(prob), as.numeric(had_sub.2018$PA))
+
+#now calculate AUC
+auc <- performance(pred, "auc")@y.values[[1]]
+auc # RC = 0.8866906
+
+#now plot ROC curve
+perf <- performance( pred, "tpr", "fpr")
+plot(perf)
+
+# make it look nicer
+data.frame(x = perf@x.values[[1]],
+           y = perf@y.values[[1]]) %>% 
+  ggplot(aes(x, y))+
+    geom_abline(slope = 1, intercept = 0,
+              linetype = "dotted",
+              size = 1)+
+  geom_path(colour = "#e50083",
+            size = 1)+
+  annotate("label", x = 0.1, y = 1, label = "AUC = 0.88", size=5) +
+  theme_classic()+
+  labs(x = "1 - Specificity",
+       y = "Sensitivity")
+
+auc_ROCR <- performance(pred, measure = "auc")
+auc_ROCR@y.values[[1]] # 0.8866906
+
+sum(had_sub.2018$PA == 0) / nrow(had_sub.2018) # 0.5696721
+### cross validation testing and AUC and Confusion matric
+
+splitdf <- function(dataframe, seed=NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  index <- 1:nrow(dataframe)
+  trainindex <- sample(index, trunc(length(index)/1/4))
+  trainset <- dataframe[trainindex, ]
+  testset <- dataframe[-trainindex, ]
+  list(trainset=trainset,testset=testset)# splitting the data
+}
+#apply the function
+splits.had <- splitdf(had_sub.2018, seed=808)
+
+#it returns a list - two data frames called trainset and testset
+str(splits.had)
+
+# there are 130 to train and 393 test
+lapply(splits.had,nrow)
+
+#view the first few columns in each data frame
+lapply(splits.had,head)
+
+# save the training and testing sets as data frames
+datv.had <- splits.had$trainset# data for validation
+datf.had <- splits.had$testset #data for fitting
+str(datv.had)#
+str(datf.had)#
+table(datv.had$PA)#0=69 1=53
+table(datf.had$PA)#0=209 1=157
+
+names(datf.had)
+
+### 9.2. PREDICTION
+
+Fitting_BN1 <- predict(had.pamm.Z10$gam,newdata=datf.had,se.fit=TRUE)
+Fitting_BN1 <- as.data.frame(Fitting_BN1)
+datf.had <- cbind(datf.had, Fitting_BN1)
+head(datf.had)
+names(datf.had)
+summary(datf.had)
+library(caret)#needs dplyr and tidyr
+
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+str(datv.had)
+anova(had.pamm.Z10$gam)
+datv.had$PA <- as.factor(datv.had$PA)
+mod_fit.had <- train(PA ~ Depth + Algae + Sand + tri + mean_velocity + dist + Simpson, 
+                 family = binomial(link = "cloglog"),
+                 data=datv.had, method="gam")# training data set
+summary(mod_fit.had)
+exp(coef(mod_fit.had$finalModel))
+
+predict(mod_fit.had, newdata=datf.had)
+predict(mod_fit.had, newdata=datf.had, type="prob")
+yy.had <- as.data.frame(predict)
+head(yy.had)
+varImp(mod_fit.had) #variable importance
+
+
+pred.had = predict(mod_fit.had, newdata=datf.had)#testing dataset
+accuracy.had <- table(pred.had, datf.had[,"PA"])
+sum(diag(accuracy.had))/sum(accuracy.had)
+## [1]0.6912568
+pred2 = predict(mod_fit.had, newdata=datf.had)
+str(pred2)
+table(pred2)
+str(datf.had)#
+datf.had$PA <- factor(datf.had$PA)
+confusionMatrix(data=pred2, datf.had$PA)
+#               Accuracy : 0.6913          
+ #                95% CI : (0.6412, 0.7382)
+  #  No Information Rate : 0.571           
+   # P-Value [Acc > NIR] : 1.512e-06       
+                                          
+    #              Kappa : 0.3733          
+                                          
+# Mcnemar's Test P-Value : 0.5725          
+                                          
+ #           Sensitivity : 0.7129          
+  #          Specificity : 0.6624          
+   #      Pos Pred Value : 0.7376          
+    #     Neg Pred Value : 0.6341          
+     #        Prevalence : 0.5710          
+#         Detection Rate : 0.4071          
+ #  Detection Prevalence : 0.5519          
+  #    Balanced Accuracy : 0.6877      
+                                  
+
+# TSS = TPR + TNR -1
+#  true positive rate (sensitivity)
+#  true negative rate (specificity)
+# TSS = 0.7129  + 0.6624 -1
+0.7129  + 0.6624 -1
+# = 0.3753
+```
+
+## Haddock model predictions
+```{r model predictions for haddock model}
+
+library(lme4)
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+summary(had.pamm.Z10$gam)
+had.new.data.algae <- with(had_sub.2018, expand.grid(Algae = seq(min(Algae), max(Algae), length = 200),
+                                           Depth = mean(Depth),
+                                           mean_velocity = mean(mean_velocity),
+                                           Sand = mean(Sand),
+                                           tri = mean(tri),
+                                           dist = mean(dist),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.algae <- predict(had.pamm.Z10$gam, had.new.data.algae, type = "link", se.fit = TRUE)
+had.pred.algae <- cbind(had.pred.algae, had.new.data.algae)
+had.pred.algae <- transform(had.pred.algae, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+algae.model.2 <- ggplot(had.pred.algae, aes(x = Algae, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=Algae, y=PA)) +
+  xlab("Proportional algae cover") +
+  ggtitle("A") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+algae.model.2
+
+
+had.new.data.Depth <- with(had_sub.2018, expand.grid(Depth = seq(min(Depth), max(Depth), length = 200),
+                                           Algae = mean(Algae),
+                                           mean_velocity = mean(mean_velocity),
+                                           Sand = mean(Sand),
+                                           tri = mean(tri),
+                                           dist = mean(dist),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.Depth <- predict(had.pamm.Z10$gam, had.new.data.Depth, type = "link", se.fit = TRUE)
+had.pred.Depth <- cbind(had.pred.Depth, had.new.data.Depth)
+had.pred.Depth <- transform(had.pred.Depth, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Depth.model.2 <- ggplot(had.pred.Depth, aes(x = Depth, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=Depth, y=PA)) +
+  xlab("Depth (m)") +
+  ggtitle("B") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Depth.model.2
+
+had.new.data.velo <- with(had_sub.2018, expand.grid(mean_velocity = seq(min(mean_velocity), max(mean_velocity), length = 200),
+                                           Algae = mean(Algae),
+                                           Depth = mean(Depth),
+                                           Sand = mean(Sand),
+                                           tri = mean(tri),
+                                           dist = mean(dist),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.velo <- predict(had.pamm.Z10$gam, had.new.data.velo, type = "link", se.fit = TRUE)
+had.pred.velo <- cbind(had.pred.velo, had.new.data.velo)
+had.pred.velo <- transform(had.pred.velo, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Vel.model.2 <- ggplot(had.pred.velo, aes(x = mean_velocity, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=mean_velocity, y=PA)) +
+  xlab("Mean current velocity (m/s)") +
+  ggtitle("C") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Vel.model.2
+
+had.new.data.tri <- with(had_sub.2018, expand.grid(tri = seq(min(tri), max(tri), length = 200),
+                                           Algae = mean(Algae),
+                                           Depth = mean(Depth),
+                                           Sand = mean(Sand),
+                                           mean_velocity = mean(mean_velocity),
+                                           dist = mean(dist),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.tri <- predict(had.pamm.Z10$gam, had.new.data.tri, type = "link", se.fit = TRUE)
+had.pred.tri <- cbind(had.pred.tri, had.new.data.tri)
+had.pred.tri <- transform(had.pred.tri, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+tri.model.2 <- ggplot(had.pred.tri, aes(x = tri, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=tri, y=PA)) +
+  xlab("TRI") +
+  ggtitle("D") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+tri.model.2
+
+had.new.data.Simpson <- with(had_sub.2018, expand.grid(Simpson = seq(min(Simpson), max(Simpson), length = 200),
+                                           Algae = mean(Algae),
+                                           Depth = mean(Depth),
+                                           Sand = mean(Sand),
+                                           mean_velocity = mean(mean_velocity),
+                                           dist = mean(dist),
+                                           Zone = median(Zone),
+                                           tri = mean(tri)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.Simpson <- predict(had.pamm.Z10$gam, had.new.data.Simpson, type = "link", se.fit = TRUE)
+had.pred.Simpson <- cbind(had.pred.Simpson, had.new.data.Simpson)
+had.pred.Simpson <- transform(had.pred.Simpson, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+Simp.model.2 <- ggplot(had.pred.Simpson, aes(x = Simpson, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=Simpson, y=PA)) +
+  xlab("Simpson's diversity index") +
+  ggtitle("E") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+Simp.model.2
+
+had.new.data.dist <- with(had_sub.2018, expand.grid(dist = seq(min(dist), max(dist), length = 200),
+                                           Algae = mean(Algae),
+                                           Depth = mean(Depth),
+                                           Sand = mean(Sand),
+                                           mean_velocity = mean(mean_velocity),
+                                           Simpson = mean(Simpson),
+                                           Zone = median(Zone),
+                                           tri = mean(tri)))
+ilink <- family(had.pamm.Z10$gam)$linkinv
+had.pred.dist <- predict(had.pamm.Z10$gam, had.new.data.dist, type = "link", se.fit = TRUE)
+had.pred.dist <- cbind(had.pred.dist, had.new.data.dist)
+had.pred.dist <- transform(had.pred.dist, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+dist.model.2 <- ggplot(had.pred.dist, aes(x = dist, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=had_sub.2018, aes(x=dist, y=PA)) +
+  xlab("Distance to shore (m)") +
+  ggtitle("F") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+dist.model.2
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+had.results<- ggarrange(algae.model.2,Depth.model.2,Vel.model.2,Simp.model.2,tri.model.2,dist.model.2,ncol = 3, nrow = 2)
+# Annotate the figure by adding a common labels
+annotate_figure(had.results,
+                left = text_grob("Probability of juvenile presence", color = "black", rot = 90))
+
+```
+
+## Visualisation - Haddock
+```{r Visualising}
+
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+library(vroom)
+####  Put the predicted data into our large dataset ####
+#Load visualisation data
+visualisation_data_arran <- vroom("Big_data_Mar24.csv", delim=",")
+visualisation_data_arran$Depth<--pmin(-visualisation_data_arran$Depth, visualisation_data_arran$Depth) 
+summary(visualisation_data_arran)
+dim(visualisation_data_arran)
+had_presence.model.visualisation <- as.vector(predict.gam(had.pamm.Z10$gam, visualisation_data_arran, type="response"))
+
+#Appending site
+had_vis <- data.frame(Site=1:27992,Prediction=had_presence.model.visualisation)
+visualisation_data_arran <- tibble::rowid_to_column(visualisation_data_arran, "Site")
+
+#Merge onto visualisation frame PA
+predict_merge.had<- merge(x=visualisation_data_arran, y=had_vis, "Site")
+had.pred.sub <- dplyr::select(predict_merge.had, Longitude, Latitude, Prediction)
+had.pred.sub <- na.omit(had.pred.sub)
+had.pred.sub %>% distinct(Longitude, Latitude, .keep_all = TRUE)
+
+## irregualr cells make into a raster
+library(raster)
+library(akima)
+
+steps <- 1000
+isu.had <- with(had.pred.sub, interp(Longitude, Latitude, Prediction , duplicate = "mean",
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+haddock.raster <- raster(isu.had)
+haddock.raster
+proj4string(haddock.raster) <- CRS("+init=epsg:32630")
+# mask of the velocity raster by polygon
+plot(haddock.raster)
+plot(Arran2, add=TRUE)
+haddock.raster
+masked.haddock <- mask(haddock.raster,Arran2, inverse=TRUE) # remove areas on land
+masked.haddock
+plot(masked.haddock)
+plot(Arran2, add=TRUE)
+
+# save it
+#writeRaster(masked.haddock,'Rasters/masked.haddock2.tif')
+
+# make a df of the raster to plotin ggplot
+had.pred.raster <- raster("Rasters/Had latlong PA.tif")
+haddock.raster.spdf <- as(had.pred.raster, "SpatialPixelsDataFrame")
+haddock.raster.df <- as.data.frame(haddock.raster.spdf)
+summary(haddock.raster.df)
+names(haddock.raster.df)
+colnames(haddock.raster.df) <- c("Haddock.Prediction", "Longitude", "Latitude")
+summary(haddock.raster.df)
+had.pred.raster
+names(had.pred.raster) <- "Haddock.Prediction"
+
+## making a quick copy for...reasons
+had_data <- had_sub.2018
+had_data$PA <- as.factor(had_data$PA)
+
+# map with predicted haddock and real points
+
+had.pred.map<- ggplot()+
+  geom_raster(data = as.data.frame(had.pred.raster, xy = TRUE), aes(x, y, fill = Haddock.Prediction ))+
+  scale_fill_viridis_c(option="viridis", na.value = "white", name="Probability\npresence")+
+  geom_sf(data = MPA2, fill=NA,colour="#D55E00", size=5)+
+  geom_sf(data=Arran)+
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA), size=1, data = cod_data, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "white"))+
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE)+
+  ggtitle("B")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+had.pred.map
+
+```
+
+##Error maps haddock
+```{r error maps}
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+## trying with original data points - observed
+#Load visualisation data
+observed_points_had <- had_sub.2018 # copy so as to not overwrite if you make a mistake
+summary(observed_points_had)
+names(observed_points_had)
+
+## predict model
+had_presence_observed <- as.vector(predict.gam(had.pamm.Z10$gam, observed_points_had, se.fit=TRUE, interval="confidence", type="response")) #predict model
+
+#Appending site
+had_presence_observed<-as.data.frame(had_presence_observed) # make df
+had_presence_observed <- tibble::rowid_to_column(had_presence_observed, "ID") # add row ID
+summary(had_presence_observed)
+
+#Merge onto visualisation frame PA
+predict_obs.had <- merge(x=observed_points_had, y=had_presence_observed, "ID") # join together
+predict_obs.had$error<-predict_obs.had$fit - predict_obs.had$PA  # cal error
+predict_obs.had <- na.omit(predict_obs.had)
+summary(predict_obs.had)
+
+library(automap)
+# interplating presence/absence raster
+names(predict_obs.had)
+
+xy.obs.hd <- predict_obs.had[,c(4,3)]
+
+obs_projected_had <- SpatialPointsDataFrame(coords = xy.obs.hd, data = predict_obs.had,
+                             proj4string = CRS("+proj=longlat +datum=WGS84"))
+proj4string(obs_projected_had) <- CRS("+init=EPSG:4326")
+summary(obs_projected_had)
+obs_projected_had <- spTransform(obs_projected_had, CRS("+init=epsg:32630")) # projecting
+summary(obs_projected_had)
+
+# draw location at which krig created (new data) - using the same number of points as the extracted bathy point layer
+depth.reg <- spsample(MPA, 218928, type="regular")  
+#convert to spatial pixels
+depth.grid <- SpatialPixels(depth.reg) 
+summary(depth.grid)
+
+# other projected version if needed
+depth.grid.2 <- spTransform(depth.grid,
+                        crs(obs_projected_had)) 
+summary(depth.grid.2)
+
+error.krig.had <- autoKrige(error~1, 
+                            input_data=obs_projected_had, 
+                            new_data=depth.grid.2,
+                            remove_duplicates = TRUE)
+
+plot(error.krig.had)
+
+data_kig_error.had<-as.data.frame(error.krig.had$krige_output)
+data_kig_error.had<-data_kig_error.had[,1:3]
+summary(data_kig_error.had)
+## irregular grid raster will have to fix
+#### make a raster of krig output ####
+library(raster)
+library(akima)
+library(data.table)
+
+data_kig_error.table.had <- data.table(as.data.frame(data_kig_error.had, xy = TRUE))
+setnames(data_kig_error.table.had, "var1.pred", "Error")
+setnames(data_kig_error.table.had, "x1", "Longitude")
+setnames(data_kig_error.table.had, "x2", "Latitude")
+attributes(data_kig_error.table.had)
+
+steps <- 1000
+isu.error.had <- with(data_kig_error.table.had, interp(Longitude, Latitude, Error , 
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+error.raster.had <- raster(isu.error.had)
+plot(error.raster.had)
+crs(error.raster.had) <- "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs"
+# Convert to degrees
+#error.raster.had <- projectRaster(error.raster.had, crs='+proj=longlat +datum=WGS84') 
+dev.off()
+# mask of the raster by polygon
+plot(error.raster.had)
+Arran2
+plot(Arran2, add=TRUE)
+error.raster.had
+
+masked.error.had <- mask(error.raster.had,Arran2, inverse=TRUE) # remove areas on land
+masked.error.had
+names(masked.error.had) <- "Error"
+masked.error.had
+plot(masked.error.had)
+plot(Arran2, add=TRUE)
+ 
+# save it
+#writeRaster(masked.error.had,'Rasters/masked.error_had2.tif', overwrite=TRUE)
+
+# make a df of the raster to plotin ggplot
+had.pred.error<- raster("Rasters/Had error Latlong.tif")
+had.error.spdf.limit <- as(had.pred.error, "SpatialPixelsDataFrame")
+had.error.df.lim <- as.data.frame(had.error.spdf.limit)
+summary(had.error.df.lim)
+names(had.error.df.lim)
+colnames(had.error.df.lim) <- c("Haddock.Error", "Longitude", "Latitude")
+summary(had.error.df.lim)
+had.pred.error
+names(had.pred.error) <- "Haddock.Error"
+plot(had.pred.error)
+
+## making a quick copy for...reasons
+had_data <- had_sub.2018
+had_data$PA <- as.factor(had_data$PA)
+
+library(ggplot2)
+library(viridis)
+library(ggrepel)
+## mapping in error 
+
+had.map.error<- ggplot()+
+  geom_raster(data = as.data.frame(had.pred.error, xy = TRUE), aes(x, y, fill = Haddock.Error ))+
+  scale_fill_viridis_c(option="magma", na.value = "white", name="Probability\nerror") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+had.map.error
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+had.results2<- ggarrange(had.pred.map,had.map.error,ncol = 2, nrow = 1)
+# Annotate the figure by adding a common labels
+annotate_figure(had.results2,
+                top = text_grob("Prediction of Presence/absence of haddock and error map", color = "black", face = "bold", size = 14),
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+```
+
+##Extrapolation - haddock
+```{r extrpolation of haddock data}
+## had.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Algae + Sand + tri + mean_velocity + dist + Simpson, random=~(1|Zone), data=had_sub.2018, family=c("binomial"), REML = TRUE)
+
+library(dismo)
+## selecting just the variables for haddock
+variables <- stack(algae.import,
+                   gravel.import,
+                   mud.import,
+                   sand.import,
+                   simpson.import,
+                   velocity.import,
+                   distance.import,
+                   bathy.import,
+                   TRI.import,
+                   sand.dist,
+                   gravel.dist,
+                   algae.dist,
+                   mud.dist,
+                   quick = TRUE)
+plot(variables)
+
+had.variables <- stack(bathy.import,
+                   algae.import,
+                   sand.import,
+                   TRI.import,
+                   velocity.import,
+                   distance.import,
+                   simpson.import,
+                   quick = TRUE)
+plot(had.variables)
+
+#### running a MESS for had variables #####
+
+names(had_sub.2018)
+had.xy <- had_sub.2018[,c(4,3)] # points where from surveys
+had.reference_points <- raster::extract(had.variables, had.xy) # point sampling for your sites
+had.ms <- mess(x=had.variables, v=had.reference_points, full=FALSE)
+had.mss <- mess(x=had.variables, v=had.reference_points, full=TRUE)
+plot(had.ms)
+plot(had.mss)
+
+## resample the new layer to match the depth layer 
+r.new = resample(had.ms, bathy.import)
+r.new # new rez
+bathy.import# original
+had.ms#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326"
+ex = extent(bathy.import)
+had.ms = crop(r.new, ex)
+
+had.ms <- mask(had.ms,MPA2) # remove areas outside MPA
+plot(had.ms)
+had.ms
+
+#### plotting in ggplot ####
+
+had.map.extrap<- ggplot()+
+  geom_raster(data = as.data.frame(had.ms, xy = TRUE), aes(x, y, fill = mess  ))+
+  scale_fill_viridis_c(option="mako", na.value = "white", name="MESS\nValue") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+had.map.extrap
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+had.prediction.maps<- ggarrange(had.pred.map, had.map.error, had.map.extrap,ncol = 2, nrow=2)
+# Annotate the figure by adding a common labels
+annotate_figure(had.prediction.maps,
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+```
+
+## Whiting - GAMM
+```{r whiting GAMMs}
+
+#Running GAMS
+library(gratia)
+library(gamm4)
+library(lattice)
+library(jtools)
+# making sure the factors are not characters
+names(whit_sub.2018)
+
+# Null GAMM
+gamm0 <- gamm4(PA ~ 1, random=~(1|Zone), data=whit_sub.2018, family=c("binomial")) 
+DN <- sum(residuals(gamm0$gam, type = "deviance")^2) # Deviance from NULL GAMM
+
+#### whiting mixed model Zone as random effect ####
+
+whit.pamm.Z1 <- gamm4(PA ~ s(Depth, bs="tp") + s(Mud, bs="tp") + s(Gravel, bs="tp") + s(Sand, bs="tp") + s(tri, bs="tp") + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter, bs="tp") + s(sand.dist.edge, bs="tp") + s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp") + s(P2A.ratio, bs="tp") + s(frac.dim.index, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z1$gam) ## summary of gam
+summary(whit.pamm.Z1$mer) ## underlying mixed model
+appraise(whit.pamm.Z1$gam) # like gam.check()
+anova(whit.pamm.Z1$gam)
+draw(whit.pamm.Z1$gam)
+# remove fdi
+
+whit.pamm.Z2 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + Gravel + Sand + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) + sand.dist.edge + s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp") + s(P2A.ratio, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z2$gam) ## summary of gam
+summary(whit.pamm.Z2$mer) ## underlying mixed model
+appraise(whit.pamm.Z2$gam) # like gam.check()
+anova(whit.pamm.Z2$gam)
+draw(whit.pamm.Z2$gam)
+DR <- sum(residuals(whit.pamm.Z2$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 45.04634
+# remove sand
+
+whit.pamm.Z3 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + Gravel + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) + sand.dist.edge + s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp") + s(P2A.ratio, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z3$gam) ## summary of gam
+summary(whit.pamm.Z3$mer) ## underlying mixed model
+appraise(whit.pamm.Z3$gam) # like gam.check()
+anova(whit.pamm.Z3$gam)
+draw(whit.pamm.Z3$gam)
+AIC(whit.pamm.Z2$mer, whit.pamm.Z3$mer ) #lower
+BIC(whit.pamm.Z2$mer, whit.pamm.Z3$mer) #lower
+DR <- sum(residuals(whit.pamm.Z3$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 45.02718
+# remove sand dist edge
+
+whit.pamm.Z4 <-gamm4(PA ~ s(Depth, bs="tp") + Mud + Gravel + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) +  s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp") + s(P2A.ratio, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z4$gam) ## summary of gam
+summary(whit.pamm.Z4$mer) ## underlying mixed model
+appraise(whit.pamm.Z4$gam) # like gam.check()
+anova(whit.pamm.Z4$gam)
+draw(whit.pamm.Z4$gam)
+AIC(whit.pamm.Z3$mer, whit.pamm.Z4$mer ) #lower
+BIC(whit.pamm.Z3$mer, whit.pamm.Z4$mer) #lower
+DR <- sum(residuals(whit.pamm.Z4$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 45.16682
+# remove gravel
+
+whit.pamm.Z5 <-gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) +  s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp") + s(P2A.ratio, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z5$gam) ## summary of gam
+summary(whit.pamm.Z5$mer) ## underlying mixed model
+appraise(whit.pamm.Z5$gam) # like gam.check()
+anova(whit.pamm.Z5$gam)
+draw(whit.pamm.Z5$gam)
+AIC(whit.pamm.Z4$mer, whit.pamm.Z5$mer ) #lower
+BIC(whit.pamm.Z4$mer, whit.pamm.Z5$mer) #lower
+DR <- sum(residuals(whit.pamm.Z5$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 44.44568
+# remove P2A ratio
+
+whit.pamm.Z6 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) +  s(algae.dist.edge, bs="tp") + s(pebble.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z6$gam) ## summary of gam
+summary(whit.pamm.Z6$mer) ## underlying mixed model
+appraise(whit.pamm.Z6$gam) # like gam.check()
+anova(whit.pamm.Z6$gam)
+draw(whit.pamm.Z6$gam)
+AIC(whit.pamm.Z5$mer, whit.pamm.Z6$mer ) #lower
+BIC(whit.pamm.Z5$mer, whit.pamm.Z6$mer) #lower
+DR <- sum(residuals(whit.pamm.Z6$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+#  44.05504
+# remove peb dist edge
+
+whit.pamm.Z7 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(dist, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z7$gam) ## summary of gam
+summary(whit.pamm.Z7$mer) ## underlying mixed model
+appraise(whit.pamm.Z7$gam) # like gam.check()
+anova(whit.pamm.Z7$gam)
+draw(whit.pamm.Z7$gam)
+AIC(whit.pamm.Z6$mer, whit.pamm.Z7$mer ) #lower
+BIC(whit.pamm.Z6$mer, whit.pamm.Z7$mer) #lower
+DR <- sum(residuals(whit.pamm.Z7$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 43.95977
+# remove dist
+
+whit.pamm.Z8 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") + s(Perimeter) +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z8$gam) ## summary of gam
+summary(whit.pamm.Z8$mer) ## underlying mixed model
+appraise(whit.pamm.Z8$gam) # like gam.check()
+anova(whit.pamm.Z8$gam)
+draw(whit.pamm.Z8$gam)
+AIC(whit.pamm.Z7$mer, whit.pamm.Z8$mer ) #lower
+BIC(whit.pamm.Z7$mer, whit.pamm.Z8$mer) #lower
+DR <- sum(residuals(whit.pamm.Z8$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+#  42.89918
+# remove perimeter
+
+whit.pamm.Z9 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") + s(Patch.Area, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z9$gam) ## summary of gam
+summary(whit.pamm.Z9$mer) ## underlying mixed model
+appraise(whit.pamm.Z9$gam) # like gam.check()
+anova(whit.pamm.Z9$gam)
+draw(whit.pamm.Z9$gam)
+AIC(whit.pamm.Z8$mer, whit.pamm.Z9$mer ) #lower
+BIC(whit.pamm.Z8$mer, whit.pamm.Z9$mer) #lower
+DR <- sum(residuals(whit.pamm.Z9$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 42.38724
+# remove patch area
+
+whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z10$gam) ## summary of gam
+summary(whit.pamm.Z10$mer) ## underlying mixed model
+appraise(whit.pamm.Z10$gam) # like gam.check()
+anova(whit.pamm.Z10$gam)
+draw(whit.pamm.Z10$gam)
+AIC(whit.pamm.Z9$mer, whit.pamm.Z10$mer ) #lower
+BIC(whit.pamm.Z9$mer, whit.pamm.Z10$mer) #lower
+DR <- sum(residuals(whit.pamm.Z10$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+## 41.05371
+# rmeove mud
+
+whit.pamm.Z11 <- gamm4(PA ~ s(Depth, bs="tp") + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+summary(whit.pamm.Z11$gam) ## summary of gam
+summary(whit.pamm.Z11$mer) ## underlying mixed model
+appraise(whit.pamm.Z11$gam) # like gam.check()
+anova(whit.pamm.Z11$gam)
+draw(whit.pamm.Z11$gam)
+AIC(whit.pamm.Z10$mer, whit.pamm.Z11$mer ) #lower
+BIC(whit.pamm.Z10$mer, whit.pamm.Z11$mer) #lower
+DR <- sum(residuals(whit.pamm.Z11$gam, type = "deviance")^2) # Deviance from our GAMM
+DE <- (DN-DR)*100/DN; DE # Deviance Explained from our GAMM model
+# 40.63312
+
+
+library(AICcmodavg)
+
+#define list of models
+models <- list(whit.pamm.Z1$mer, whit.pamm.Z2$mer, whit.pamm.Z3$mer, whit.pamm.Z4$mer, whit.pamm.Z5$mer, whit.pamm.Z6$mer, whit.pamm.Z7$mer, whit.pamm.Z8$mer, whit.pamm.Z9$mer, whit.pamm.Z10$mer, whit.pamm.Z11$mer)
+
+#specify model names
+mod.names <- c("whit.pamm.Z1", "whit.pamm.Z2", "whit.pamm.Z3", "whit.pamm.Z4", "whit.pamm.Z5", "whit.pamm.Z6", "whit.pamm.Z7", "whit.pamm.Z8", "whit.pamm.Z9", "whit.pamm.Z10", "whit.pamm.Z11")
+
+#calculate AIC of each model
+aictab(cand.set = models, modnames = mod.names)
+summary(whit.pamm.Z10$gam)
+
+```
+
+## Whiting - Morans
+```{r Morans test on Whiting}
+
+library(spdep)
+library(sp)
+library(spatialreg)
+
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+# Get spatial data 
+names(whit_sub.2018)
+spdat.whit <- SpatialPointsDataFrame(cbind(whit_sub.2018$Longitude, whit_sub.2018$Latitude), whit_sub.2018)
+
+# Weights matrix with the 10 nearest neighbors, in weights list form 
+lstw.whit  <- nb2listw(knn2nb(knearneigh(spdat.whit, k = 10)))
+
+# get residuals - had.pamm.Z6
+model.resid.whit <- residuals.gam(whit.pamm.Z10$gam, type="deviance")
+
+# Moran's test using the residuals of the model - whit.pamm.Z10 - mixed model with Zone
+MT5.whit <- moran.test(residuals(whit.pamm.Z10$mer), lstw.whit, randomisation = FALSE)
+MT5.whit
+#Moran I statistic standard deviate = 1.6489, p-value = 0.04958
+#alternative hypothesis: greater
+#sample estimates:
+#Moran I statistic       Expectation          Variance 
+ #    0.0293908660     -0.0020533881      0.0003636525  
+
+## Monte Carlo sim
+moran.mc(model.resid.whit, lstw.whit, nsim=1000)
+# statistic = 0.042092, observed rank = 985, p-value = 0.01598
+
+```
+
+## Whiting - AUC
+```{r Whiting Area under Curve}
+# Compute AUC for predicting Class with the model
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+summary(whit.pamm.Z10$gam)
+summary(whit.pamm.Z10$mer)
+anova(whit.pamm.Z10$gam)
+library(ROCR)
+library(pROC)
+class(whit_sub.2018$PA)
+par(mfrow=c(1,1))
+par(mar=c(4,4,2,2))
+#get the predicted probabilities for each sample
+prob.whit <- predict(whit.pamm.Z10$gam, type="response")
+
+# make a ROCR prediction object using the predicted values 
+# instruct to do all as numeric as "Error: Format of predictions is invalid. It couldn't be coerced to a list." 
+pred.whit <- prediction(as.numeric(prob), as.numeric(whit_sub.2018$PA))
+
+#now calculate AUC
+auc <- performance(pred.whit, "auc")@y.values[[1]]
+auc # RC = 0.8406133
+
+#now plot ROC curve
+perf.whit <- performance( pred.whit, "tpr", "fpr")
+plot(perf.whit)
+
+# make it look nicer
+data.frame(x = perf.whit@x.values[[1]],
+           y = perf.whit@y.values[[1]]) %>% 
+  ggplot(aes(x, y))+
+    geom_abline(slope = 1, intercept = 0,
+              linetype = "dotted",
+              size = 1)+
+  geom_path(colour = "#e50083",
+            size = 1)+
+  annotate("label", x = 0.1, y = 1, label = "AUC = 0.84", size=5) +
+  theme_classic()+
+  labs(x = "1 - Specificity",
+       y = "Sensitivity")
+
+auc_ROCR <- performance(pred.whit, measure = "auc")
+auc_ROCR@y.values[[1]] # 0.8866906
+
+sum(whit_sub.2018$PA == 0) / nrow(whit_sub.2018) # 0.576
+### cross validation testing and AUC and Confusion matric
+
+splitdf <- function(dataframe, seed=NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  index <- 1:nrow(dataframe)
+  trainindex <- sample(index, trunc(length(index)/1/4))
+  trainset <- dataframe[trainindex, ]
+  testset <- dataframe[-trainindex, ]
+  list(trainset=trainset,testset=testset)# splitting the data
+}
+#apply the function
+splits <- splitdf(whit_sub.2018, seed=808)
+
+#it returns a list - two data frames called trainset and testset
+str(splits)
+
+# there are 130 to train and 393 test
+lapply(splits,nrow)
+
+#view the first few columns in each data frame
+lapply(splits,head)
+
+# save the training and testing sets as data frames
+datv.whit <- splits$trainset# data for validation
+datf.whit <- splits$testset #data for fitting
+str(datv.whit)#
+str(datf.whit)#
+table(datv.whit$PA)#0=69 1=53
+table(datf.whit$PA)#0=210 1=156
+
+names(datf.whit)
+
+### 9.2. PREDICTION
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+Fitting_BN1 <- predict(whit.pamm.Z10$gam,newdata=datf.whit,se.fit=TRUE)
+Fitting_BN1 <- as.data.frame(Fitting_BN1)
+datf.whit <- cbind(datf.whit, Fitting_BN1)
+head(datf.whit)
+names(datf.whit)
+#datf <- datf[,-17]
+summary(datf.whit)
+#https://www.r-bloggers.com/evaluating-logistic-regression-models/
+library(caret)#needs dplyr and tidyr
+#library(lattice)
+str(datv.whit)
+whit.pamm.Z10
+anova(whit.pamm.Z10$gam)
+datv.whit$PA <- as.factor(datv.whit$PA)
+mod_fit.whit <- train(PA ~ Depth + tri + Mud + mean_velocity + Simpson + algae.dist.edge + gravel.dist.edge, 
+                 family = binomial(link = "cloglog"),
+                 data=datv.whit, method="gam")# training data set
+summary(mod_fit.whit)
+exp(coef(mod_fit.whit$finalModel))
+
+predict(mod_fit.whit, newdata=datf.whit)
+predict(mod_fit.whit, newdata=datf.whit, type="prob")
+yy.whit <- as.data.frame(predict)
+head(yy.whit)
+varImp(mod_fit.whit) #variable importance
+
+
+pred.whit = predict(mod_fit.whit, newdata=datf.whit)#testing dataset
+accuracy <- table(pred.whit, datf.whit[,"PA"])
+sum(diag(accuracy))/sum(accuracy)
+## [1] 0.6994536
+pred.whit = predict(mod_fit.whit, newdata=datf.whit)
+str(pred.whit)
+table(pred.whit)
+str(datf.whit)#
+datf.whit$PA <- factor(datf.whit$PA)
+confusionMatrix(data=pred.whit, datf.whit$PA)
+#               Accuracy : 0.6995         
+ #                95% CI : (0.6496, 0.746)
+  #  No Information Rate : 0.5738         
+   # P-Value [Acc > NIR] : 4.898e-07      
+                                         
+    #              Kappa : 0.3773         
+                                         
+# Mcnemar's Test P-Value : 0.1527         
+                                         
+ #           Sensitivity : 0.7762         
+  #          Specificity : 0.5962         
+   #      Pos Pred Value : 0.7212         
+    #     Neg Pred Value : 0.6643         
+     #        Prevalence : 0.5738         
+      #   Detection Rate : 0.4454         
+#   Detection Prevalence : 0.6175         
+ #     Balanced Accuracy : 0.6862 
+
+# TSS = TPR + TNR -1
+#  true positive rate (sensitivity)
+#  true negative rate (specificity)
+# TSS = 0.7762   + 0.5962 -1
+0.7762   + 0.5962 -1
+# = 0.3724
+
+```
+
+## Whiting model predictions
+```{r model predictions for whiting model}
+
+library(lme4)
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+summary(whit.pamm.Z10$gam)
+whit.new.data.Depth<- with(whit_sub.2018, expand.grid(Depth = seq(min(Depth), max(Depth), length = 200),
+                                           algae.dist.edge = mean(algae.dist.edge),
+                                           gravel.dist.edge = mean(gravel.dist.edge),
+                                           tri = mean(tri),
+                                           Mud = mean(Mud),
+                                           mean_velocity = mean(mean_velocity),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.Depth <- predict(whit.pamm.Z10$gam, whit.new.data.Depth, type = "link", se.fit = TRUE)
+whit.pred.Depth <- cbind(whit.pred.Depth, whit.new.data.Depth)
+whit.pred.Depth <- transform(whit.pred.Depth, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+whit.depth.model.1 <- ggplot(whit.pred.Depth, aes(x = Depth, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=Depth, y=PA)) +
+  xlab("Depth (m)") +
+  ggtitle("A") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+whit.depth.model.1
+
+
+whit.new.data.Adist.edge<- with(whit_sub.2018, expand.grid(algae.dist.edge = seq(min(algae.dist.edge), max(algae.dist.edge), length = 200),
+                                           Depth = mean(Depth),
+                                           gravel.dist.edge = mean(gravel.dist.edge),
+                                           tri = mean(tri),
+                                           Mud = mean(Mud),
+                                           mean_velocity = mean(mean_velocity),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.ADE <- predict(whit.pamm.Z10$gam, whit.new.data.Adist.edge, type = "link", se.fit = TRUE)
+whit.pred.ADE <- cbind(whit.pred.ADE, whit.new.data.Adist.edge)
+whit.pred.ADE <- transform(whit.pred.ADE, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+whit.model.ADE <- ggplot(whit.pred.ADE, aes(x = algae.dist.edge, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=algae.dist.edge, y=PA)) +
+  geom_vline(xintercept=0, linetype='dotted', col = 'red', size=1) +
+  xlab("Distance to algae patch edge (m)") +
+  ggtitle("B") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+whit.model.ADE
+
+whit.new.data.GDE <- with(whit_sub.2018, expand.grid(gravel.dist.edge = seq(min(gravel.dist.edge), max(gravel.dist.edge), length = 200),
+                                           Depth = mean(Depth),
+                                           algae.dist.edge = mean(algae.dist.edge),
+                                           tri = mean(tri),
+                                           Mud = mean(Mud),
+                                           mean_velocity = mean(mean_velocity),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.GDE <- predict(whit.pamm.Z10$gam, whit.new.data.GDE, type = "link", se.fit = TRUE)
+whit.pred.GDE <- cbind(whit.pred.GDE, whit.new.data.GDE)
+whit.pred.GDE <- transform(whit.pred.GDE, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+GDE.model.1 <- ggplot(whit.pred.GDE, aes(x = gravel.dist.edge, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=gravel.dist.edge, y=PA)) +
+  geom_vline(xintercept=0, linetype='dotted', col = 'red', size=1) +
+  xlab("Distance to gravel patch edge (m)") +
+  ggtitle("C") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+GDE.model.1
+
+whit.new.data.tri <- with(whit_sub.2018, expand.grid(tri = seq(min(tri), max(tri), length = 200),
+                                           Depth = mean(Depth),
+                                           algae.dist.edge = mean(algae.dist.edge),
+                                           gravel.dist.edge = mean(gravel.dist.edge),
+                                           mean_velocity = mean(mean_velocity),
+                                           Mud = mean(Mud),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.tri <- predict(whit.pamm.Z10$gam, whit.new.data.tri, type = "link", se.fit = TRUE)
+whit.pred.tri <- cbind(whit.pred.tri, whit.new.data.tri)
+whit.pred.tri <- transform(whit.pred.tri, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+tri.model.1 <- ggplot(whit.pred.tri, aes(x = tri, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=tri, y=PA)) +
+  xlab("Terrain ruggedness index") +
+  ggtitle("D") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+tri.model.1
+
+whit.new.data.vel <- with(whit_sub.2018, expand.grid(mean_velocity = seq(min(mean_velocity), max(mean_velocity), length = 200),
+                                           Depth = mean(Depth),
+                                           algae.dist.edge = mean(algae.dist.edge),
+                                           gravel.dist.edge = mean(gravel.dist.edge),
+                                           tri = mean(tri),
+                                           Mud = mean(Mud),
+                                           Zone = median(Zone),
+                                           Simpson = mean(Simpson)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.vel <- predict(whit.pamm.Z10$gam, whit.new.data.vel, type = "link", se.fit = TRUE)
+whit.pred.vel <- cbind(whit.pred.vel, whit.new.data.vel)
+whit.pred.vel <- transform(whit.pred.vel, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+vel.model.1 <- ggplot(whit.pred.vel, aes(x = mean_velocity, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=mean_velocity, y=PA)) +
+  xlab("Mean velocity m/s") +
+  ggtitle("E") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+vel.model.1
+
+whit.new.data.simp <- with(whit_sub.2018, expand.grid(Simpson = seq(min(Simpson), max(Simpson), length = 200),
+                                           Depth = mean(Depth),
+                                           algae.dist.edge = mean(algae.dist.edge),
+                                           gravel.dist.edge = mean(gravel.dist.edge),
+                                           tri = mean(tri),
+                                           Mud = mean(Mud),
+                                           Zone = median(Zone),
+                                           mean_velocity = mean(mean_velocity)))
+ilink <- family(whit.pamm.Z10$gam)$linkinv
+whit.pred.simp <- predict(whit.pamm.Z10$gam, whit.new.data.simp, type = "link", se.fit = TRUE)
+whit.pred.simp <- cbind(whit.pred.simp, whit.new.data.simp)
+whit.pred.simp <- transform(whit.pred.simp, lwr_ci = ilink(fit - (2 * se.fit)),
+                        upr_ci = ilink(fit + (2 * se.fit)),
+                        fitted = ilink(fit))
+
+simp.model.1 <- ggplot(whit.pred.simp, aes(x = Simpson, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+  ylim(0, 1) +
+  geom_line() + 
+  geom_point(data=whit_sub.2018, aes(x=Simpson, y=PA)) +
+  xlab("Simpson's Diversity Index") +
+  ggtitle("F") +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",colour = "white"),
+          axis.title.y=element_blank(),
+          axis.line = element_line(size = 0.5, colour = "black"))
+simp.model.1
+
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+whit.results<- ggarrange(whit.depth.model.1,whit.model.ADE,GDE.model.1,tri.model.1,vel.model.1,simp.model.1,ncol = 3, nrow = 2)
+# Annotate the figure by adding a common labels
+annotate_figure(whit.results,
+                left = text_grob("Probability of juvenile presence", color = "black", rot = 90))
+
+```
+
+## Visualisation - Whiting
+```{r Visualising}
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+library(vroom)
+####  Put the predicted data into our large dataset ####
+#Load visualisation data
+visualisation_data_arran <- vroom("Big_data_Mar24.csv", delim=",")
+visualisation_data_arran$Depth<--pmin(-visualisation_data_arran$Depth, visualisation_data_arran$Depth) 
+summary(visualisation_data_arran)
+dim(visualisation_data_arran)
+whit_presence.model.visualisation <- as.vector(predict.gam(whit.pamm.Z10$gam, visualisation_data_arran, type="response"))
+
+#Appending site
+whit_vis <- data.frame(Site=1:27992,Prediction=whit_presence.model.visualisation)
+visualisation_data_arran <- tibble::rowid_to_column(visualisation_data_arran, "Site")
+
+#Merge onto visualisation frame PA
+predict_merge.whit<- merge(x=visualisation_data_arran, y=whit_vis, "Site")
+whit.pred.sub <- dplyr::select(predict_merge.whit, Longitude, Latitude, Prediction)
+whit.pred.sub <- na.omit(whit.pred.sub)
+whit.pred.sub %>% distinct(Longitude, Latitude, .keep_all = TRUE)
+
+
+## irregualr cells make into a raster
+library(raster)
+library(akima)
+
+steps <- 1000
+isu.whit <- with(whit.pred.sub, interp(Longitude, Latitude, Prediction , duplicate = "mean",
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+whiting.raster <- raster(isu.whit)
+whiting.raster
+
+# make UTM30N
+proj4string(whiting.raster) <- CRS("+init=epsg:32630")
+Arran2 <- spTransform(Arran2,
+                        crs(whiting.raster))
+
+# mask of the velocity raster by polygon
+plot(whiting.raster)
+plot(Arran2, add=TRUE)
+whiting.raster
+masked.whiting <- mask(whiting.raster,Arran2, inverse=TRUE) # remove areas on land
+masked.whiting
+plot(masked.whiting)
+plot(Arran2, add=TRUE)
+
+# save it
+#writeRaster(masked.whiting,'Raster/masked.whiting2.tif')
+# bring in LatLomng version converted from QGIS as R went weird
+# make a df of the raster to plotin ggplot
+whit.pred.raster <- raster("Rasters/Whit latlong PA.tif")
+whit.raster.spdf <- as(whit.pred.raster, "SpatialPixelsDataFrame")
+whit.raster.df <- as.data.frame(whit.raster.spdf)
+summary(whit.raster.df)
+names(whit.raster.df)
+colnames(whit.raster.df) <- c("Whiting.Prediction", "Longitude", "Latitude")
+summary(whit.raster.df)
+whit.pred.raster
+names(whit.pred.raster) <- "Whiting.Prediction"
+
+## making a quick copy for...reasons
+whit_data <- whit_sub.2018
+whit_data$PA <- as.factor(whit_data$PA)
+
+# map with predicted whiting and real points
+whit.pred.map<- ggplot()+
+  geom_raster(data = as.data.frame(whit.pred.raster, xy = TRUE), aes(x, y, fill = Whiting.Prediction ))+
+  scale_fill_viridis_c(option="viridis", na.value = "white", name="Probability\npresence")+
+  geom_sf(data = MPA2, fill=NA,colour="#D55E00", size=5)+
+  geom_sf(data=Arran)+
+  geom_point(mapping = aes(x = Longitude, y = Latitude, col=PA), size=1, data = cod_data, position = "identity", show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "black", "1" = "white"))+
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE)+
+  ggtitle("C")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+whit.pred.map
+
+```
+
+## Error maps whiting
+```{r error maps}
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+
+## trying with original data points - observed
+#Load visualisation data
+observed_points_whit<- whit_sub.2018 # copy so as to not overwrite if you make a mistake
+summary(observed_points_whit)
+names(observed_points_whit)
+
+## predict model
+whit_presence_observed <- as.vector(predict.gam(whit.pamm.Z10$gam, observed_points_whit, se.fit=TRUE, interval="confidence", type="response")) #predict model
+
+#Appending site
+whit_presence_observed<-as.data.frame(whit_presence_observed) # make df
+whit_presence_observed <- tibble::rowid_to_column(whit_presence_observed, "ID") # add row ID
+summary(whit_presence_observed)
+
+#Merge onto visualisation frame PA
+predict_obs.whit<- merge(x=observed_points_whit, y=whit_presence_observed, "ID") # join together
+predict_obs.whit$error<-predict_obs.whit$fit - predict_obs.whit$PA  # cal error
+predict_obs.whit <- na.omit(predict_obs.whit)
+summary(predict_obs.whit)
+
+library(automap)
+# interplating presence/absence raster
+names(predict_obs.whit)
+
+xy.obs.whit <- predict_obs.whit[,c(4,3)]
+
+obs_projected_whit <- SpatialPointsDataFrame(coords = xy.obs.whit, data = predict_obs.whit,
+                             proj4string = CRS("+proj=longlat +datum=WGS84"))
+proj4string(obs_projected_whit) <- CRS("+init=EPSG:4326")
+summary(obs_projected_whit)
+obs_projected_whit <- spTransform(obs_projected_whit, CRS("+init=epsg:32630")) # projecting
+summary(obs_projected_whit)
+
+# draw location at which krig created (new data) - using the same number of points as the extracted bathy point layer
+depth.reg <- spsample(MPA, 218928, type="regular")  
+#convert to spatial pixels
+depth.grid <- SpatialPixels(depth.reg) 
+summary(depth.grid)
+
+# other projected version if needed
+depth.grid.2 <- spTransform(depth.grid,
+                        crs(obs_projected_whit)) 
+summary(depth.grid.2)
+
+error.krig.whit <- autoKrige(error~1, 
+                            input_data=obs_projected_whit, 
+                            new_data=depth.grid.2,
+                            remove_duplicates = TRUE)
+
+plot(error.krig.whit)
+error.krig.whit
+data_kig_error.whit<-as.data.frame(error.krig.whit$krige_output)
+data_kig_error.whit<-data_kig_error.whit[,1:3]
+summary(data_kig_error.whit)
+## irregular grid raster will have to fix
+#### make a raster of krig output ####
+library(raster)
+library(akima)
+library(data.table)
+
+data_kig_error.table.whit <- data.table(as.data.frame(data_kig_error.whit, xy = TRUE))
+setnames(data_kig_error.table.whit, "var1.pred", "Error")
+setnames(data_kig_error.table.whit, "x1", "Longitude")
+setnames(data_kig_error.table.whit, "x2", "Latitude")
+attributes(data_kig_error.table.whit)
+
+steps <- 1000
+isu.error.whit <- with(data_kig_error.table.whit, interp(Longitude, Latitude, Error , 
+    xo=seq(min(Longitude), max(Longitude), length = steps),
+    yo=seq(min(Latitude), max(Latitude), length = steps)
+))
+
+error.raster.whit <- raster(isu.error.whit)
+plot(error.raster.whit)
+crs(error.raster.whit) <- "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs"
+# Convert to degrees
+#error.raster.had <- projectRaster(error.raster.had, crs='+proj=longlat +datum=WGS84') 
+dev.off()
+# mask of the raster by polygon
+plot(error.raster.whit)
+Arran2
+plot(Arran2, add=TRUE)
+error.raster.whit
+
+masked.error.whit <- mask(error.raster.whit,Arran2, inverse=TRUE) # remove areas on land
+masked.error.whit
+names(masked.error.whit) <- "Error"
+masked.error.whit
+plot(masked.error.whit)
+plot(Arran2, add=TRUE)
+
+# save it
+#writeRaster(masked.error.whit,'Raster/masked.error.whit.tif', overwrite=TRUE)
+
+# make a df of the raster to plotin ggplot
+whit.pred.error<- raster("Rasters/Whit error Latlong.tif")
+whit.error.spdf.limit <- as(whit.pred.error, "SpatialPixelsDataFrame")
+whit.error.df.lim <- as.data.frame(whit.error.spdf.limit)
+summary(whit.error.df.lim)
+names(whit.error.df.lim)
+colnames(whit.error.df.lim) <- c("Whiting.Error", "Longitude", "Latitude")
+summary(whit.error.df.lim)
+whit.pred.error
+names(whit.pred.error) <- "Whiting.Error"
+plot(whit.pred.error)
+
+## making a quick copy 
+whit_data <- whit_sub.2018
+whit_data$PA <- as.factor(whit_data$PA)
+
+library(ggplot2)
+library(viridis)
+library(ggrepel)
+## mapping in error 
+whit.map.error<- ggplot()+
+  geom_raster(data = as.data.frame(whit.pred.error, xy = TRUE), aes(x, y, fill = Whiting.Error ))+
+  scale_fill_viridis_c(option="magma", na.value = "white", name="Probability\nerror") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+whit.map.error
+
+library(ggpubr)
+
+# Create a figure by combining the different plots
+whit.results2<- ggarrange(whit.pred.map,whit.map.error,ncol = 2, nrow = 1)
+# Annotate the figure by adding a common labels
+annotate_figure(whit.results2,
+                top = text_grob("Prediction of Presence/absence of whiting and error map", color = "black", face = "bold", size = 14),
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+```
+
+##Extrapolation - whiting
+```{r extrpolation of cod data}
+library(dismo)
+## whit.pamm.Z10 <- gamm4(PA ~ s(Depth, bs="tp") + Mud + tri + s(mean_velocity, bs="tp") + s(Simpson, bs="tp") +  s(algae.dist.edge, bs="tp") + s(gravel.dist.edge, bs="tp"), random=~(1|Zone), data=whit_sub.2018, family=c("binomial"), REML = TRUE)
+## selecting just the variables for whiting
+variables <- stack(algae.import,
+                   gravel.import,
+                   mud.import,
+                   sand.import,
+                   simpson.import,
+                   velocity.import,
+                   distance.import,
+                   bathy.import,
+                   TRI.import,
+                   sand.dist,
+                   gravel.dist,
+                   algae.dist,
+                   mud.dist,
+                   quick = TRUE)
+plot(variables)
+
+whit.variables <- stack(bathy.import,
+                        mud.import,
+                        TRI.import,
+                        velocity.import,
+                        simpson.import,
+                        algae.dist,
+                        gravel.dist,
+                        quick = TRUE)
+plot(whit.variables)
+
+#### running a MESS for had variables #####
+
+names(whit_sub.2018)
+whit.xy <- whit_sub.2018[,c(4,3)] # points where from surveys
+whit.reference_points <- raster::extract(whit.variables, whit.xy) # point sampling for your sites
+whit.ms <- mess(x=whit.variables, v=whit.reference_points, full=FALSE)
+whit.mss <- mess(x=whit.variables, v=whit.reference_points, full=TRUE)
+plot(whit.ms)
+plot(whit.mss)
+
+## resample the new layer to match the depth layer 
+r.new = resample(whit.ms, bathy.import)
+r.new # new rez
+bathy.import# original
+whit.ms#original
+plot(r.new)
+crs(r.new) <- "+init=EPSG:4326"
+ex = extent(bathy.import)
+whit.ms = crop(r.new, ex)
+
+whit.ms <- mask(whit.ms,MPA2) # remove areas outside MPA
+plot(whit.ms)
+whit.ms
+#### plotting in ggplot ####
+
+whit.map.extrap<- ggplot()+
+  geom_raster(data = as.data.frame(whit.ms, xy = TRUE), aes(x, y, fill = mess  ))+
+  scale_fill_viridis_c(option="mako", na.value = "white", name="MESS\nValue") +
+  geom_sf(data = MPA2, fill=NA,colour="white", size=5)+
+  geom_sf(data=Arran) +
+  coord_sf(xlim = c(-5.45, -4.95), ylim = c(55.35, 55.58), expand = FALSE) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+whit.map.extrap
+
+# Create a figure by combining the different plots
+whit.prediction.maps<- ggarrange(whit.pred.map, whit.map.error, whit.map.extrap,ncol = 2, nrow=2)
+# Annotate the figure by adding a common labels
+annotate_figure(whit.prediction.maps,
+                left = text_grob("Latitude", color = "black", rot = 90),
+                bottom = text_grob("Longitude", color = "black", rot = 0))
+```
