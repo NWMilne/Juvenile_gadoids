@@ -1,5 +1,7 @@
 # Marine landscape composition and biodiversity drive the distribution of gadoid nursery areas
 
+[![DOI](https://zenodo.org/badge/788506086.svg)](https://doi.org/10.5281/zenodo.14996684)
+
 ## Project summary
 Survival during species juvenile stages may potentially be the most important factor in a population’s recruitment. Using a combination of environmental variables gathered in the field with imaging and predictive mapping, this study predicted the nursery habitat of three commercially important juvenile gadoid species; Atlantic cod (<em>Gadus morhua</em>), haddock (<em>Melanogrammus aeglefinus</em>) and whiting (<em>Merlangius merlangus</em>). 
 
